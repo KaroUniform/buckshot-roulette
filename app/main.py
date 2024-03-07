@@ -31,16 +31,6 @@ async def main() -> None:
         handlers.base.router,  # Make sure it's the last handler
     )
 
-    # await bot.set_my_commands(
-    #     chat_actions.commands
-    #     + ban.commands
-    #     + mute.commands
-    #     + voice.commands
-    #     + warn.commands
-    #     + jericho.commands   #     + broadcast.commands
-    #     + linkers.commands
-    #     + quotes.commands
-    # )
     await bot(DeleteWebhook(drop_pending_updates=True))
     await dp.start_polling(
         bot,
