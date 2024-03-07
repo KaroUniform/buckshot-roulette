@@ -1,0 +1,3 @@
+[22.02.2024 07:42:48][ERROR] Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
+[22.02.2024 07:42:48][WARNING] Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = 6649228926)
+[22.02.2024 07:42:59][INFO] Connection established (tryings = 1, bot id = 6649228926)
