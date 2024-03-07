@@ -17,7 +17,7 @@ async def main() -> None:
     logging.basicConfig(
         format="[%(asctime)s][%(levelname)s] %(message)s",
         level=logging.INFO,
-        handlers=[time_rotating_handler, logging.StreamHandler()],
+        handlers=[logging.StreamHandler()],
         datefmt="%d.%m.%Y %H:%M:%S",
     )
     bot = Bot(token=config.bot_token.get_secret_value())
@@ -26,8 +26,8 @@ async def main() -> None:
 
     dp.include_routers(
         handlers.rooms_manager.router,
-        handlers.echo.router,
         handlers.start.router,
+        handlers.echo.router,
         handlers.base.router,  # Make sure it's the last handler
     )
 
