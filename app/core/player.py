@@ -66,6 +66,9 @@ class Player:
         Args:
         - item (Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]): The item to be added.
         """
+        if self.inventory.count_items() >= 8:
+            return
+
         match item:
             case "handsaw":
                 self.inventory.handsaw += 1

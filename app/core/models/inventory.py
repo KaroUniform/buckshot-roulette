@@ -37,6 +37,15 @@ class InventoryModel(BaseModel):
     handcuff: int = 0
     magnifying_glass: int = 0
 
+    def count_items(self):
+        return (
+            self.handcuff
+            + self.beer
+            + self.smoke
+            + self.handsaw
+            + self.magnifying_glass
+        )
+
     @model_validator(mode="after")
     def check_total_items(self):
         """
