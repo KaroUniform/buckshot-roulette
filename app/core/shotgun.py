@@ -1,8 +1,10 @@
 import random
 from typing import List
+
+import numpy as np
 from .player import Player
 from .models.ammo import AmmoType
-import numpy as np
+from math import ceil
 
 
 class Shotgun:
@@ -10,11 +12,11 @@ class Shotgun:
 
     def __init__(
         self,
-        damage: int = 1,  # Determines the damage strength of the shotgun shot.
-        mean_num_rounds: float = 5.0,  # Sets the average number of rounds in the magazine during reload.
-        std_dev_num_rounds: float = 1.5,  # Defines the standard deviation in the distribution of rounds during reload.
-        mean_live_rounds: float = 2.5,  # Specifies the average number of live rounds (causing damage) during reload.
-        std_dev_live_rounds: float = 1.5,  # Sets the standard deviation in the distribution of live rounds during reload.
+        damage: int = 1,
+        mean_num_rounds: float = 5.0,
+        std_dev_num_rounds: float = 1.5,
+        mean_live_ratio: float = 0.5,
+        std_dev_live_ratio: float = 0.2,
     ) -> None:
         """Initialize a Shotgun instance with optional parameters."""
         self.magazine: List[AmmoType] = []
@@ -22,36 +24,44 @@ class Shotgun:
         self.damage = damage
         self.mean_num_rounds = mean_num_rounds
         self.std_dev_num_rounds = std_dev_num_rounds
-        self.mean_live_rounds = mean_live_rounds
-        self.std_dev_live_rounds = std_dev_live_rounds
+        self.mean_live_ratio = mean_live_ratio
+        self.std_dev_live_ratio = std_dev_live_ratio
 
     def recharge(self) -> str:
         """Recharge the shotgun with random rounds."""
-        total_rounds = int(
-            np.random.normal(self.mean_num_rounds, self.std_dev_num_rounds)
-        )
-        total_rounds = max(2, total_rounds)
+        rounds = self.generate_normal_distribution()
 
-        min_live_rounds = int(0.3 * total_rounds)
-
-        live_rounds_count = int(
-            np.random.normal(self.mean_live_rounds, self.std_dev_live_rounds)
-        )
-        live_rounds_count = max(
-            min_live_rounds, min(total_rounds - 1, live_rounds_count)
-        )
-
-        blank_rounds_count = total_rounds - live_rounds_count
-
-        rounds = [AmmoType.LIVE] * live_rounds_count + [
-            AmmoType.BLANK
-        ] * blank_rounds_count
-
-        random.shuffle(rounds)
-        self.rounds = rounds
+        live = rounds / 2 + rounds / 2 * random.uniform(-0.2, 0.3)
+        blank = rounds - live
+        live, blank = max(1, round(live)), max(1, round(blank))
+        rounds = [AmmoType.LIVE] * live + [AmmoType.BLANK] * blank
+        shuffled_list = np.random.permutation(rounds)
+        self.rounds = shuffled_list
         res = [r.value for r in rounds]
-        res.sort()
         return ", ".join(res)
+
+    def generate_normal_distribution(
+        self,
+        mean: float = 5,
+        std_deviation: float = 1,
+        lower_bound: int = 2,
+        upper_bound: int = 7,
+    ) -> int:
+        """
+        Generates a random number from a normal distribution with the specified mean and standard deviation.
+
+        Args:
+        - mean (float): The mean of the normal distribution (default is 4.0).
+        - std_deviation (float): The standard deviation of the normal distribution (default is 2.0).
+        - lower_bound (int): The lower bound for the generated number (default is 2).
+        - upper_bound (int): The upper bound for the generated number (default is 7).
+
+        Returns:
+        int: A rounded and bounded random number between the specified lower and upper bounds.
+        """
+        generated_number = random.normalvariate(mean, std_deviation)
+        generated_number = max(lower_bound, min(upper_bound, round(generated_number)))
+        return generated_number
 
     def shot(self, target: Player) -> str:
         """Perform a shot with the shotgun to."""
