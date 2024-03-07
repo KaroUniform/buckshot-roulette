@@ -27,18 +27,26 @@ class Shotgun:
 
     def recharge(self) -> str:
         """Recharge the shotgun with random rounds."""
-        num_rounds = int(
+        total_rounds = int(
             np.random.normal(self.mean_num_rounds, self.std_dev_num_rounds)
         )
-        num_rounds = max(2, min(8, num_rounds))
+        total_rounds = max(2, total_rounds)
+
+        min_live_rounds = int(0.3 * total_rounds)
+
         live_rounds_count = int(
             np.random.normal(self.mean_live_rounds, self.std_dev_live_rounds)
         )
-        live_rounds_count = max(1, min(num_rounds - 1, live_rounds_count))
-
-        rounds = [AmmoType.LIVE] * live_rounds_count + [AmmoType.BLANK] * (
-            num_rounds - live_rounds_count
+        live_rounds_count = max(
+            min_live_rounds, min(total_rounds - 1, live_rounds_count)
         )
+
+        blank_rounds_count = total_rounds - live_rounds_count
+
+        rounds = [AmmoType.LIVE] * live_rounds_count + [
+            AmmoType.BLANK
+        ] * blank_rounds_count
+
         random.shuffle(rounds)
         self.rounds = rounds
         res = [r.value for r in rounds]
