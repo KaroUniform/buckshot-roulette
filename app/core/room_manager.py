@@ -40,7 +40,7 @@ class RoomsManager:
 
         room.add_player(
             PlayerModel(name=player_name, chat_id=player_id, hp=1, max_hp=1),
-            player_turn=player_seat,
+            player_seat=player_seat,
         )
         self.PLAYERS_TO_ROOMS[player_id] = room_id
 
