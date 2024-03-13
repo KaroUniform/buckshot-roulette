@@ -38,6 +38,7 @@ class Shotgun:
         random.shuffle(rounds)
         self.rounds = rounds
         res = [r.value for r in rounds]
+        res.sort()
         return ", ".join(res)
 
     def generate_normal_distribution(
