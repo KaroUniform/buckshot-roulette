@@ -1,10 +1,9 @@
 import random
 from typing import List
 
-import numpy as np
+import random
 from .player import Player
 from .models.ammo import AmmoType
-from math import ceil
 
 
 class Shotgun:
@@ -35,8 +34,9 @@ class Shotgun:
         blank = rounds - live
         live, blank = max(1, round(live)), max(1, round(blank))
         rounds = [AmmoType.LIVE] * live + [AmmoType.BLANK] * blank
-        shuffled_list = np.random.permutation(rounds)
-        self.rounds = shuffled_list
+
+        random.shuffle(rounds)
+        self.rounds = rounds
         res = [r.value for r in rounds]
         return ", ".join(res)
 
