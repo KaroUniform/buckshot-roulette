@@ -1,10 +1,11 @@
 from typing import List, Literal, Tuple, Union
 
 
-from core.models.turn_model import TurnResult, Dealer
+from .models.turn_model import TurnResult, Dealer
 from .models.player_model import PlayerModel
 from .player import Player
 from .shotgun import Shotgun
+from .use_item import use_item
 import random
 
 
@@ -37,13 +38,13 @@ class Scene:
     ITEMS = [
         ItemType.HANDSAW,
         ItemType.BEER,
-        ItemType.BEER,
-        ItemType.BEER,
+        ItemType.PILLS,
+        ItemType.PHONE,
+        # ItemType.ADRENALINE,
         ItemType.HANDCUFF,
-        ItemType.HANDCUFF,
-        ItemType.SMOKE,
         ItemType.SMOKE,
         ItemType.GLASS,
+        ItemType.INVERTER,
     ]
 
     def __init__(self, games: int = 3) -> None:
@@ -129,20 +130,14 @@ class Scene:
 
     def make_turn(
         self,
-        action: Literal[
-            "handsaw", "beer", "smoke", "handcuff", "magnifying_glass", "me", "him"
-        ],
+        action: Union[ItemType, Literal["me", "him"]],
         player_id: int,
     ):
         """
         Performs a player's turn in the game.
 
-        - action (Literal): The action to perform. Valid actions include:
-            - "handsaw": Use a handsaw to deal damage.
-            - "beer": Consume beer for a chance to affect shotgun rounds.
-            - "smoke": Use smoke to increase player's health.
-            - "handcuff": Use handcuffs to immobilize the opponent temporarily.
-            - "magnifying_glass": Inspect the shotgun with a magnifying glass.
+        - action (Union[ItemType, Literal["me", "him"]]): The action to perform. Valid actions include:
+            - ItemType - Player chooses to use item.
             - "me": Player chooses to perform an action on themselves.
             - "him": Player chooses to perform an action on the opponent.
         - player_id (int): The ID of the player making the turn. The dealer will not allow the player to make a wrong turn.
@@ -176,7 +171,6 @@ class Scene:
                 f"{player.data.name} {action_results} itself!"
             )
             self.dealer.end(action_results)
-
         elif action == "him":
             # Handle action when player chooses to perform an action on the opponent
             action_results = self.shotgun.shot(target=target)
@@ -187,12 +181,13 @@ class Scene:
             )
             self.first_player.still_tied()
             self.second_player.still_tied()
-
-        else:
+        elif(type(action) is ItemType):
             # Handle action when player uses an item
             action_results, second_player_action_result = self.use_item(action)
             turn_result.active_player_action_result = action_results
             turn_result.passive_player_action_result = second_player_action_result
+        else:
+            raise ValueError("This is not an action or a valid item.")
 
         # Check game state and update TurnResult accordingly
         if not self.first_player.still_alive():
@@ -311,13 +306,13 @@ class Scene:
 
     def use_item(
         self,
-        item: Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"],
+        item: ItemType,
     ):
         """
         Processes a player's use of a specific item during their turn.
 
         Args:
-        - item (Literal): The item to use. Valid items include:
+        - item (ItemType): The item to use. Valid items include:
             - "handsaw": Use a handsaw to double damage.
             - "beer": Consume beer to throw away the last round from the shotgun.
             - "smoke": Use smoke to increase player's health.
@@ -332,56 +327,7 @@ class Scene:
             - If the item usage fails, a string indicating the failure reason.
         """
         player, target = self.solve_players()
-
-        if player.get_number_of_item(item) == 0:
-            return (f"You don't have {item}", None)
-
-        if not self.dealer.use_items(item):
-            return "❌Only 1 item per turn", None
-
-        match item:
-            case ItemType.HANDSAW.value:
-
-                player.inventory.handsaw -= 1
-                self.shotgun.damage *= 2
-                return (
-                    "🧨Careful, the weapon now deals x2 damage",
-                    f"{player.data.name} uses🪚",
-                )
-            case ItemType.BEER.value:
-
-                player.inventory.beer -= 1
-                round = self.shotgun.shaking()
-                return (
-                    f"⤴️ The {round} flew out of the shotgun",
-                    f"{player.data.name} uses 🍺. The ⤴️{round} flew out of the shotgun ",
-                )
-            case ItemType.SMOKE.value:
-
-                player.inventory.smoke -= 1
-                player.smoke()
-                return (
-                    f"🚬You now have {player.data.hp} hp",
-                    f"{player.data.name} uses 🚬",
-                )
-            case ItemType.HANDCUFF.value:
-
-                if target.tied > 0:
-                    return ("You cannot re-link a linked player", None)
-                player.inventory.handcuff -= 1
-                target.tied = 3
-                self.dealer.extend_turn()
-                return (
-                    f"🔗{target.data.name} is tied for 1 turn",
-                    f"🔗 {player.data.name} has tied you up",
-                )
-            case ItemType.GLASS.value:
-
-                player.inventory.magnifying_glass -= 1
-                return (
-                    f"🔍 You see the {str(self.shotgun.inspect())} inside",
-                    f"{player.data.name} uses 🔍. Very interesting...",
-                )
+        return use_item(item, player, target, self.dealer, self.shotgun,)
 
     def distribute_items(self, player: Player, desired_length: int) -> List[str]:
         """
@@ -402,10 +348,8 @@ class Scene:
 
         # Distribute the items to the player, updating their inventory
         for item in blackbox:
-            try:
-                player.add_item(item.value)
-            except Exception:
-                break
+            player.add_item(item)
+
 
         # Return emoji representations of the distributed items
         return player.get_items_emoji()

@@ -1,4 +1,4 @@
-from typing import Literal
+from .models.items import ItemType
 from .models.player_model import PlayerModel
 from .models.inventory import InventoryModel
 
@@ -16,9 +16,9 @@ class Player:
     - flush_inventory(): Resets the player's inventory by creating a new InventoryModel instance.
     - smoke(): Increases the player's health points (HP) by 1 if it is less than the maximum HP.
     - set_hp(hp: int): Sets both the current HP and maximum HP of the player.
-    - add_item(item: Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]): Adds an item to the player's inventory.
-    - delete_item(item: Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]): Removes an item from the player's inventory.
-    - get_number_of_item(item: Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]) -> int: Retrieves the quantity of a specific item in the player's inventory.
+    - add_item(item: ItemType): Adds an item to the player's inventory.
+    - delete_item(item: ItemType): Removes an item from the player's inventory.
+    - get_number_of_item(item: ItemType) -> int: Retrieves the quantity of a specific item in the player's inventory.
     - get_items_emoji() -> list: Retrieves a list of emoji representations for the items in the player's inventory.
     - take_damage(damage: int): Reduces the player's HP by the specified amount of damage.
     - still_alive() -> bool: Checks if the player is still alive based on their current HP.
@@ -40,13 +40,11 @@ class Player:
         """
         self.inventory = InventoryModel()
 
-    def smoke(self):
+    def smoke(self, hp=1):
         """
-        Increases the player's health points (HP) by 1 if it is less than the maximum HP.
+        Increases the player's health points (HP) by hp if it is less than the maximum HP.
         """
-        if self.data.hp < self.data.max_hp:
-            self.data.hp += 1
-
+        self.data.hp = min(self.data.hp + hp, self.data.max_hp)
     def set_hp(self, hp: int):
         """
         Sets both the current HP and maximum HP of the player.
@@ -58,63 +56,55 @@ class Player:
         self.data.max_hp = hp
 
     def add_item(
-        self, item: Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]
+        self, item: ItemType
     ):
         """
         Adds an item to the player's inventory.
 
         Args:
-        - item (Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]): The item to be added.
+        - item (ItemType): The item to be added.
         """
         if self.inventory.count_items() >= 8:
             return
-
-        match item:
-            case "handsaw":
-                self.inventory.handsaw += 1
-            case "beer":
-                self.inventory.beer += 1
-            case "smoke":
-                self.inventory.smoke += 1
-            case "handcuff":
-                self.inventory.handcuff += 1
-            case "magnifying_glass":
-                self.inventory.magnifying_glass += 1
+        
+        item_attr = item.value
+        
+        if hasattr(self.inventory, item_attr):
+            current_count = getattr(self.inventory, item_attr)
+            new_count = current_count + 1
+            setattr(self.inventory, item_attr, new_count)
 
     def delete_item(
-        self, item: Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]
+        self, item: ItemType
     ):
         """
         Removes an item from the player's inventory.
 
         Args:
-        - item (Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]): The item to be removed.
+        - item (ItemType): The item to be removed.
         """
-        match item:
-            case "handsaw":
-                self.inventory.handsaw -= 1
-            case "beer":
-                self.inventory.beer -= 1
-            case "smoke":
-                self.inventory.smoke -= 1
-            case "handcuff":
-                self.inventory.handcuff -= 1
-            case "magnifying_glass":
-                self.inventory.magnifying_glass -= 1
+        item_attr = item.value
+
+        # Check if the item exists in the inventory and reduce its count.
+        if hasattr(self.inventory, item_attr):
+            current_count = getattr(self.inventory, item_attr)
+            # Ensure the item count cannot go below zero.
+            new_count = max(0, current_count - 1)
+            setattr(self.inventory, item_attr, new_count)
 
     def get_number_of_item(
-        self, item: Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]
+        self, item: ItemType
     ) -> int:
         """
         Retrieves the quantity of a specific item in the player's inventory.
 
         Args:
-        - item (Literal["handsaw", "beer", "smoke", "handcuff", "magnifying_glass"]): The item to check.
+        - item (ItemType): The item to check.
 
         Returns:
         - int: The quantity of the specified item in the player's inventory.
         """
-        return self.inventory.__getattribute__(item)
+        return self.inventory.__getattribute__(item.value)
 
     def get_items_emoji(self) -> list:
         """
@@ -141,14 +131,20 @@ class Player:
             "smoke": "🚬",
             "handcuff": "🔗",
             "magnifying_glass": "🔍",
+            "adrenaline": "💉",
+            "inverter": "🔀",
+            "phone": "📞",
+            "pills": "💊"
+            
         }
 
         result = []
         for item, count in blackbox.items():
             if count > 0:
-                emoji = emoji_mapping.get(item, "")
-                if emoji:
-                    result.append(f"{emoji}x{count}")
+                emoji = emoji_mapping.get(item, None)
+                if not emoji:
+                    raise ValueError(f"An unexpected item was given: {item}")
+                result.append(f"{emoji}x{count}")
 
         return result
 
@@ -159,8 +155,7 @@ class Player:
         Args:
         - damage (int): The amount of damage to be applied.
         """
-        if self.data.hp >= 1:
-            self.data.hp -= damage
+        self.data.hp -= damage
 
     def still_alive(self) -> bool:
         """

@@ -1,3 +1,4 @@
+from core.models.items import ItemType
 from pydantic import BaseModel
 from typing import Literal, Optional, List
 from copy import deepcopy
@@ -94,7 +95,7 @@ class Dealer:
         new_turn.used_items = []
         self.queue.insert(self.move_counter + 1, new_turn)
 
-    def use_items(self, item: str) -> bool:
+    def use_items(self, item: ItemType) -> bool:
         """
         Records the usage of an item during the turn.
 

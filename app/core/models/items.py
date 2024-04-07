@@ -7,3 +7,7 @@ class ItemType(Enum):
     SMOKE = "smoke"
     HANDCUFF = "handcuff"
     GLASS = "magnifying_glass"
+    PHONE = "phone"
+    PILLS = "pills"
+    ADRENALINE = "adrenaline"
+    INVERTER = "inverter"

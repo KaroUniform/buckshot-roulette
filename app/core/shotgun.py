@@ -18,13 +18,16 @@ class Shotgun:
         std_dev_live_ratio: float = 0.2,
     ) -> None:
         """Initialize a Shotgun instance with optional parameters."""
-        self.magazine: List[AmmoType] = []
         self.rounds: List[AmmoType] = []
         self.damage = damage
         self.mean_num_rounds = mean_num_rounds
         self.std_dev_num_rounds = std_dev_num_rounds
         self.mean_live_ratio = mean_live_ratio
         self.std_dev_live_ratio = std_dev_live_ratio
+        
+    def invert(self):
+        """replace all blanks with live ones, and live ones with blanks, in the same sequence"""
+        self.rounds = [AmmoType.LIVE if r == AmmoType.BLANK else AmmoType.BLANK for r in self.rounds]
 
     def recharge(self) -> str:
         """Recharge the shotgun with random rounds."""

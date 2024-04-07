@@ -3,6 +3,7 @@ import re
 from aiogram import F, Bot, Router, types
 from aiogram.filters import Command
 from aiogram.types import Message
+from core.models.items import ItemType
 from core.player import Player
 from core.models.turn_model import TurnResult
 from core.room_manager import RoomsManager
@@ -201,11 +202,15 @@ async def in_game(message: Message, bot: Bot, state: FSMContext):
     action_mapping = {
         "🔼": "him",
         "🔽": "me",
-        "🍺": "beer",
-        "🚬": "smoke",
-        "🪚": "handsaw",
-        "🔗": "handcuff",
-        "🔍": "magnifying_glass",
+        "🍺": ItemType.BEER,
+        "🚬": ItemType.SMOKE,
+        "🪚": ItemType.HANDSAW,
+        "🔗": ItemType.HANDCUFF,
+        "🔍": ItemType.GLASS,
+        "💉": ItemType.ADRENALINE,
+        "🔀": ItemType.INVERTER,
+        "📞": ItemType.PHONE,
+        "💊": ItemType.PILLS,
     }
 
     action = action_mapping.get(message.text[0], None)
