@@ -106,7 +106,7 @@ class Dealer:
         - bool: True if the item usage is successful, False otherwise.
         """
         items = self.queue[self.move_counter].used_items
-        if len(items) > 0:
+        if sum(1 for item in items if item != ItemType.ADRENALINE) > 0:
             return False
         items.append(item)
         return True

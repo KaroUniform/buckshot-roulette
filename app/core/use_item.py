@@ -1,9 +1,11 @@
 import random
+from core.adrenaline import adrenaline
 from core.shotgun import Shotgun
 from core.models.turn_model import Dealer
 from core.player import Player
 from core.models.items import ItemType
 
+@adrenaline
 def use_item(
         item: ItemType,
         player: Player,
@@ -30,11 +32,18 @@ def use_item(
             - If the item usage fails, a string indicating the failure reason.
         """
 
-        if player.get_number_of_item(item) == 0:
+        if player.get_number_of_item(item) <= 0:
             return (f"You don't have {item}", None)
 
         if not dealer.use_items(item):
             return "❌Only 1 item per turn", None
+        
+        if (player.still_under_adrenaline() and player.still_under_adrenaline_time() <=0):
+            player.stop_adrenaline_effect()
+            return (
+                f"💉🦥It looks like time has already run out. Adrenaline only works for 5 seconds.",
+                f"💉🦥{player.data.name} tried to use your item, but the time of the adrenaline effect is over.",
+            )
 
         match item:
             case ItemType.HANDSAW:
@@ -109,8 +118,20 @@ def use_item(
                 player.inventory.inverter -= 1
                 shotgun.invert()
                 return (
-                        f"🔀You start the inverter. ALL the live bullets became blank bullets. ALL the blank have become live.",
-                        f"🔀{player.data.name} start the inverter. ALL the live bullets became blank bullets. ALL the blank have become live.",
+                    f"🔀You start the inverter. ALL the live bullets became blank bullets. ALL the blank have become live.",
+                    f"🔀{player.data.name} start the inverter. ALL the live bullets became blank bullets. ALL the blank have become live.",
+                )
+            case ItemType.ADRENALINE:
+                if player.still_under_adrenaline():
+                    return (
+                        f"💉That's enough for you.",
                     )
+                    
+                player.inventory.adrenaline -= 1
+                player.set_adrenaline_effect(target=target)
+                return (
+                    f"💉You feel the speedup. You can use one item from your opponent's inventory.",
+                    f"💉{player.data.name} feel the speedup",
+                )
             case _:
                 raise ValueError(f"An unexpected item was received: {item}")

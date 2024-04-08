@@ -40,7 +40,7 @@ class Scene:
         ItemType.BEER,
         ItemType.PILLS,
         ItemType.PHONE,
-        # ItemType.ADRENALINE,
+        ItemType.ADRENALINE,
         ItemType.HANDCUFF,
         ItemType.SMOKE,
         ItemType.GLASS,
@@ -170,6 +170,7 @@ class Scene:
             turn_result.passive_player_action_result = (
                 f"{player.data.name} {action_results} itself!"
             )
+            player.stop_adrenaline_effect()
             self.dealer.end(action_results)
         elif action == "him":
             # Handle action when player chooses to perform an action on the opponent
@@ -181,6 +182,7 @@ class Scene:
             )
             self.first_player.still_tied()
             self.second_player.still_tied()
+            player.stop_adrenaline_effect()
         elif(type(action) is ItemType):
             # Handle action when player uses an item
             action_results, second_player_action_result = self.use_item(action)

@@ -1,31 +1,19 @@
+from __future__ import annotations
 from .models.items import ItemType
 from .models.player_model import PlayerModel
 from .models.inventory import InventoryModel
+import time
 
 
 class Player:
     """
     Represents a player in the game with attributes such as data, inventory, and tied status.
-
-    Attributes:
-    - tied (int): Counter representing the tied status of the player.
-    - data (PlayerModel): PlayerModel instance containing player information.
-    - inventory (InventoryModel): InventoryModel instance representing the player's inventory.
-
-    Methods:
-    - flush_inventory(): Resets the player's inventory by creating a new InventoryModel instance.
-    - smoke(): Increases the player's health points (HP) by 1 if it is less than the maximum HP.
-    - set_hp(hp: int): Sets both the current HP and maximum HP of the player.
-    - add_item(item: ItemType): Adds an item to the player's inventory.
-    - delete_item(item: ItemType): Removes an item from the player's inventory.
-    - get_number_of_item(item: ItemType) -> int: Retrieves the quantity of a specific item in the player's inventory.
-    - get_items_emoji() -> list: Retrieves a list of emoji representations for the items in the player's inventory.
-    - take_damage(damage: int): Reduces the player's HP by the specified amount of damage.
-    - still_alive() -> bool: Checks if the player is still alive based on their current HP.
-    - still_tied() -> bool: Decreases the tied status of the player and returns True if still tied, False otherwise.
     """
 
     tied = 0
+    adrenaline = False
+    under_adrenaline_before = 0
+    adrenaline_inventory: InventoryModel
 
     def __init__(self, model: PlayerModel) -> None:
         """
@@ -33,6 +21,24 @@ class Player:
         """
         self.data = model
         self.inventory = InventoryModel()
+    
+    def still_under_adrenaline(self) -> bool:
+        return self.adrenaline
+    
+    def still_under_adrenaline_time(self) -> float:
+        return self.under_adrenaline_before - time.time()
+    
+    def set_adrenaline_effect(self, target: Player):
+        self.adrenaline_inventory = self.inventory
+        self.inventory = target.inventory
+        self.adrenaline = True
+        self.under_adrenaline_before = time.time() + 5
+
+    def stop_adrenaline_effect(self):
+        if not self.adrenaline:
+            return
+        self.inventory = self.adrenaline_inventory
+        self.adrenaline = False
 
     def flush_inventory(self):
         """
