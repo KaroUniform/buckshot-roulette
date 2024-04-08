@@ -131,7 +131,7 @@ def use_item(
                 player.set_adrenaline_effect(target=target)
                 return (
                     f"💉You feel the speedup. You can use one item from your opponent's inventory.",
-                    f"💉{player.data.name} feel the speedup",
+                    f"💉{player.data.name} will steal one of your items!",
                 )
             case _:
                 raise ValueError(f"An unexpected item was received: {item}")

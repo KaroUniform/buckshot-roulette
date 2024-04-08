@@ -35,6 +35,10 @@ Welcome to Buckshot Roulette! Here's a quick guide to the game:
       - *🍺Beer:* Remove one loaded cartridge from the shotgun.
       - *🪚Saw:* Double the shotgun's damage for one turn.
       - *🔍Magnifying Glass:* Identify one currently loaded cartridge in the shotgun.
+      - *📞Phone* allows you to find out the value of a random shell in the loadout.
+      - *💊Spoiled pills* can heal you by 2 HP with a 40% chance, otherwise it will hurt you by 1 HP.
+      - *🔀inverter* replaces all blank with live and all live with blank.
+      - *💉Adrenaline* allows you to use one of your opponent's items. But hurry up, the time to choose is limited!
 
 Keep a keen eye, plan your moves wisely, and aim for victory in Buckshot Roulette!
    """.strip()

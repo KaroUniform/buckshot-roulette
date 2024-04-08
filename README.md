@@ -33,11 +33,15 @@ Find the bot [@karo_buckshot_roulette_bot](https://t.me/karo_buckshot_roulette_b
 
 5. Items for Strategy:
    - Use items strategically before shooting:
-      - 🔗Handcuffs: Force your opponent to skip their next move.
-      - 🚬Cigarette: Restore one HP to yourself.
-      - 🍺Beer: Remove one loaded cartridge from the shotgun.
-      - 🪚Saw: Double the shotgun's damage for one turn.
-      - 🔍Magnifying Glass: Identify one currently loaded cartridge in the shotgun.
+      - **🔗Handcuffs**: Force your opponent to skip their next move.
+      - **🚬Cigarette**: Restore **1⚡️HP⚡️** to yourself.
+      - **🍺Beer**: Remove one loaded cartridge from the shotgun.
+      - **🪚Saw**: Double the shotgun's damage for one turn.
+      - **🔍Magnifying Glass**: Identify one currently loaded cartridge in the shotgun.
+      - **📞Phone**: Allows you to find out the value of a random shell in the loadout.
+      - **💊Spoiled pills**: Can heal you by  **2⚡️HP⚡️** with a 40% chance, otherwise it will hurt you by **1⚡️HP⚡️**.
+      - **🔀inverter**: Replaces all blank with live and all live with blank.
+      - **💉Adrenaline**: Allows you to use one of your opponent's items. But hurry up, the time to choose is limited!
 
 Keep a keen eye, plan your moves wisely, and aim for victory in Buckshot Roulette!
 
