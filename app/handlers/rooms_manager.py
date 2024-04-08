@@ -182,7 +182,7 @@ async def send_game_messages(
         await send_info(bot, passive_user_id, turn_result)
 
 
-@router.message(GameStates.in_game, F.text, F.text.not_in(["🚪Leave"]))
+@router.message(GameStates.in_game, F.text, F.text.not_in(["🚪Leave"]), F.text.not_contains("/"))
 async def in_game(message: Message, bot: Bot, state: FSMContext):
     try:
         room_id = manager.get_room_id_by_player(message.chat.id)
