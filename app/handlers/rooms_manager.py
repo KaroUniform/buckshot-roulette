@@ -12,14 +12,8 @@ from aiogram.fsm.context import FSMContext
 from core.game_states import GameStates
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import StateFilter
+import asyncio
 
-# from aiogram.fsm.state import StatesGroup, State
-
-
-# class GameStates(StatesGroup):
-#     in_game = State()
-#     new_raund = State()
-#     idle = State()
 
 
 router = Router()
@@ -114,10 +108,6 @@ async def send_info(bot: Bot, user_id: int, turn_result: TurnResult):
         + turn_result.second_player_hp
         + "Items: "
         + ",".join(turn_result.second_player_items)
-        + "\n"
-        + "Loadout: "
-        + turn_result.rounds
-        + "\n"
     )
     await bot.send_message(user_id, res)
 
@@ -157,6 +147,13 @@ async def send_game_messages(
         reply_markup=builder.as_markup(resize_keyboard=True),
     )
     await send_info(bot, active_user_id, turn_result)
+    
+    if(turn_result.rounds):
+        msg1 = await bot.send_message(active_user_id, turn_result.rounds, protect_content=True)
+        msg2 = await bot.send_message(passive_user_id, turn_result.rounds, protect_content=True)
+        await asyncio.sleep(3)
+        await msg1.edit_text("❔")
+        await msg2.edit_text("❔")
 
     if not turn_result.passive_player_action_result:
         return

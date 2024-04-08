@@ -37,6 +37,7 @@ class TurnResult(BaseModel):
     give_turn: Optional[bool] = None
     on_start_first_id: Optional[int] = None
     next_turn: Optional[int] = None
+    system_info: Optional[str] = None
 
 
 class Dealer:

@@ -102,7 +102,7 @@ def use_item(
                 )
             case ItemType.PILLS:
                 player.inventory.pills -= 1
-                if random.randint(1, 100) <= 40:
+                if random.choice([1,1,2,2,2]) == 1:
                     player.smoke(2)
                     return (
                         f"💊You're trying spoiled pills. They're working. You are being healed for 2⚡️",

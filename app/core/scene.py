@@ -120,7 +120,7 @@ class Scene:
         # Set player items and shotgun rounds in turn result
         turn_result.first_player_items = self.first_player.get_items_emoji()
         turn_result.second_player_items = self.second_player.get_items_emoji()
-        turn_result.rounds = self.shotgun.get_ammo_sorted()
+        turn_result.rounds = "Loadout: " + self.shotgun.get_ammo_sorted()
 
         # Set game state
         self.game_ended = False
@@ -244,7 +244,8 @@ class Scene:
         This method assumes that the shotgun needs to be recharged.
         """
         # Reload shotgun rounds and get the updated rounds in TurnResult
-        turn_result.rounds = self.shotgun.recharge()
+
+        turn_result.rounds = "Loadout: " + self.shotgun.recharge()
 
         # Determine the number of items to distribute randomly
         n = random.choice([1, 1, 1, 1, 2, 2, 2, 3, 3, 4])
@@ -282,7 +283,6 @@ class Scene:
         turn_result.second_player_items = self.second_player.get_items_emoji()
 
         # Set shotgun rounds in TurnResult
-        turn_result.rounds = self.shotgun.get_ammo_sorted()
 
     def add_hp_info(self, turn_result: TurnResult):
         """
