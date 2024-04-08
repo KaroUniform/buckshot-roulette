@@ -151,7 +151,7 @@ async def send_game_messages(
     if(turn_result.rounds):
         msg1 = await bot.send_message(active_user_id, turn_result.rounds, protect_content=True)
         msg2 = await bot.send_message(passive_user_id, turn_result.rounds, protect_content=True)
-        await asyncio.sleep(6)
+        await asyncio.sleep(4)
         await msg1.edit_text("❔")
         await msg2.edit_text("❔")
 
