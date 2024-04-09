@@ -18,6 +18,7 @@ Find the bot [@karo_buckshot_roulette_bot](https://t.me/karo_buckshot_roulette_b
 1. Create/Join a Room:
    - To start, create a room with `/join` command and get the code.
    - If you have a code, simply use `/join 123456` to join an existing room.
+   - Use the `/find` command to find the game (you may have to wait).
 
 2. Initiate the Game:
    - The game kicks off with a coin toss to determine who goes first.
