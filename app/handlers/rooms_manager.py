@@ -8,33 +8,68 @@ from core.player import Player
 from core.models.turn_model import TurnResult
 from core.room_manager import RoomsManager
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from utils.storage import STORAGE
 
 from core.game_states import GameStates
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import StateFilter
 import asyncio
+from utils.edit_message_with_delay import edit_message
 
 
 
 router = Router()
+MANAGER = RoomsManager()
 
 
-manager = RoomsManager()
+@router.message(Command("find"), StateFilter(None))
+async def find_game(message: Message, bot: Bot, state: FSMContext):
+    
+    if len(MANAGER.search_lobby) > 0:
+        user_id = next(iter(MANAGER.search_lobby))
+        user_data = MANAGER.search_lobby.pop(user_id)
+        room_id = random.randint(100000, 999999)
+        
+        message = message.model_copy(update={"text": "/join " + str(room_id)})
+        await join(message=message, bot=bot, state=state)
+        
+        second_user_message = user_data['message']
+        second_user_message = second_user_message.model_copy(update={"text": "/join " + str(room_id)})
+        
+        second_user_state = FSMContext(
+            storage=STORAGE,
+            key=StorageKey(
+                chat_id=second_user_message.chat.id,
+                user_id=second_user_message.from_user.id,  
+                bot_id=bot.id
+            )
+        )
+        
+        await join(message=second_user_message, bot=bot, state=second_user_state)
+        
+    else:
+        MANAGER.search_lobby[message.from_user.id] = {'message': message}
+        await message.answer("⏳You are in the waiting lobby. As soon as another player tries to find a game, he will join you.")
+        await state.set_state(GameStates.in_search)
+    
 
-
-# TODO
 @router.message(Command("leave"))
 @router.message(F.text.in_(["🚪Leave"]))
 async def new_round(message: Message, bot: Bot, state: FSMContext):
+    if state == GameStates.in_search:
+        #TODO
+        pass
+    
     await state.clear()
     try:
-        first_player, second_player = manager.get_players_chatid(message.chat.id)
+        first_player, second_player = MANAGER.get_players_chatid(message.chat.id)
     except Exception as e:
         await message.answer("farewell!", reply_markup=types.ReplyKeyboardRemove())
         return
 
-    manager.del_player_from_rooms(first_player)
-    manager.del_player_from_rooms(second_player)
+    MANAGER.del_player_from_rooms(first_player)
+    MANAGER.del_player_from_rooms(second_player)
 
     if first_player is not None:
         await bot.send_message(
@@ -61,10 +96,10 @@ async def join(message: Message, bot: Bot, state: FSMContext):
 
     room_id = extract_code_from_string(message.text)
 
-    if not room_id or not manager.check_room(room_id):
+    if not room_id or not MANAGER.check_room(room_id):
         room_id = room_id or random.randint(100000, 999999)
-        manager.create_room(room_id)
-        manager.reg_player_in_room(
+        MANAGER.create_room(room_id)
+        MANAGER.reg_player_in_room(
             message.from_user.first_name, message.chat.id, room_id
         )
         await state.set_state(GameStates.in_game)
@@ -75,16 +110,14 @@ async def join(message: Message, bot: Bot, state: FSMContext):
         )
         return
 
-    room = manager.get_room(room_id)
-    manager.reg_player_in_room(message.from_user.first_name, message.chat.id, room_id)
+    room = MANAGER.get_room(room_id)
+    MANAGER.reg_player_in_room(message.from_user.first_name, message.chat.id, room_id)
     await state.set_state(GameStates.in_game)
     await state.set_data({"room_id": room_id})
-    first_player, second_player = manager.get_players_chatid(message.chat.id)
+    first_player, second_player = MANAGER.get_players_chatid(message.chat.id)
 
     turn_result = room.start()
-    # await send_info(bot, first_player, turn_result)
-    # await send_info(bot, second_player, turn_result)
-    first_player, second_player = manager.get_players_chatid(
+    first_player, second_player = MANAGER.get_players_chatid(
         turn_result.on_start_first_id
     )
     passive_user_id = (
@@ -96,8 +129,8 @@ async def join(message: Message, bot: Bot, state: FSMContext):
         active_user_id=turn_result.on_start_first_id,
         passive_user_id=passive_user_id,
         need_update=True,
+        loadout_show_time=101
     )
-
 
 async def send_info(bot: Bot, user_id: int, turn_result: TurnResult):
     res = (
@@ -118,6 +151,7 @@ async def send_game_messages(
     active_user_id: int,
     passive_user_id: int,
     need_update: bool,
+    loadout_show_time = 4
 ):
 
     active_user_items = (
@@ -151,14 +185,11 @@ async def send_game_messages(
     if(turn_result.rounds):
         msg1 = await bot.send_message(active_user_id, turn_result.rounds, protect_content=True)
         msg2 = await bot.send_message(passive_user_id, turn_result.rounds, protect_content=True)
-        await asyncio.sleep(4)
-        await msg1.edit_text("❔")
-        await msg2.edit_text("❔")
+        asyncio.create_task(edit_message(msg1, sleep=loadout_show_time))
+        asyncio.create_task(edit_message(msg2, sleep=loadout_show_time))
 
     if not turn_result.passive_player_action_result:
         return
-
-    # print(turn_result.passive_player_action_result)
 
     builder = ReplyKeyboardBuilder()
     if turn_result.give_turn:
@@ -182,12 +213,12 @@ async def send_game_messages(
 @router.message(GameStates.in_game, F.text, F.text.not_in(["🚪Leave"]), F.text.not_contains("/"))
 async def in_game(message: Message, bot: Bot, state: FSMContext):
     try:
-        room_id = manager.get_room_id_by_player(message.chat.id)
+        room_id = MANAGER.get_room_id_by_player(message.chat.id)
     except Exception:
         await state.clear()
         return
 
-    room = manager.get_room(room_id)
+    room = MANAGER.get_room(room_id)
     active_user, passive_user = room.solve_players()
 
     if message.chat.id != active_user.data.chat_id:
@@ -253,8 +284,8 @@ async def send_game_end_message(
     await bot.send_message(
         winner.data.chat_id, "💼Congratulations, you've won!", reply_markup=keyboard_win
     )
-    manager.del_player_from_rooms(loser.data.chat_id)
-    manager.del_player_from_rooms(winner.data.chat_id)
+    MANAGER.del_player_from_rooms(loser.data.chat_id)
+    MANAGER.del_player_from_rooms(winner.data.chat_id)
 
 
 def extract_code_from_string(input_string):

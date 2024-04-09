@@ -1,14 +1,19 @@
 from re import L
+from typing import Any
 from .models.player_model import PlayerModel
 from .scene import Scene
+from aiogram.types import Message
 
 
 class RoomsManager:
-    ROOMS: dict[int, Scene] = {}
-    PLAYERS_TO_ROOMS: dict[int, int] = {}
+    search_lobby: dict[int, dict[str, Any]]
+    ROOMS: dict[int, Scene]
+    PLAYERS_TO_ROOMS: dict[int, int]
 
     def __init__(self) -> None:
-        pass
+        self.search_lobby = {}
+        self.ROOMS = {}
+        self.PLAYERS_TO_ROOMS = {}
 
     def create_room(self, room_id: int):
 
@@ -64,6 +69,4 @@ class RoomsManager:
         room = self.get_room(room_id)
         first_player = room.first_player.data.chat_id
         second_player = room.second_player.data.chat_id
-        # if first_player is None or second_player is None:
-        #     raise Exception(f"Not enought players: {first_player, second_player}")
         return first_player, second_player

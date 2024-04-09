@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher
 from config import config
 import handlers
 from aiogram.methods import DeleteWebhook
+from utils.storage import STORAGE
 
 
 async def main() -> None:
@@ -21,7 +22,7 @@ async def main() -> None:
         datefmt="%d.%m.%Y %H:%M:%S",
     )
     bot = Bot(token=config.bot_token.get_secret_value())
-    dp = Dispatcher()
+    dp = Dispatcher(name='main', storage=STORAGE)
     # dp.message.middleware(Debug())
 
     dp.include_routers(
