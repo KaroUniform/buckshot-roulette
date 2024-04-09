@@ -168,7 +168,7 @@ class Scene:
                 self.dealer.extend_turn()
             turn_result.active_player_action_result = action_results
             turn_result.passive_player_action_result = (
-                f"{player.data.name} {action_results} itself!"
+                f"{player.data.name} shot itself with a {action_results}!"
             )
             player.stop_adrenaline_effect()
             self.dealer.end(action_results)
@@ -176,9 +176,9 @@ class Scene:
             # Handle action when player chooses to perform an action on the opponent
             action_results = self.shotgun.shot(target=target)
             self.dealer.end(action_results)
-            turn_result.active_player_action_result = f"You shot by {action_results}"
+            turn_result.active_player_action_result = f"You shot with a {action_results}"
             turn_result.passive_player_action_result = (
-                f"{player.data.name} {action_results} to you"
+                f"{player.data.name} shot with a {action_results} to you"
             )
             self.first_player.still_tied()
             self.second_player.still_tied()
@@ -312,21 +312,6 @@ class Scene:
     ):
         """
         Processes a player's use of a specific item during their turn.
-
-        Args:
-        - item (ItemType): The item to use. Valid items include:
-            - "handsaw": Use a handsaw to double damage.
-            - "beer": Consume beer to throw away the last round from the shotgun.
-            - "smoke": Use smoke to increase player's health.
-            - "handcuff": Use handcuffs to immobilize the opponent temporarily.
-            - "magnifying_glass": Inspect the shotgun with a magnifying glass.
-
-        Returns:
-        - Tuple[Union[str, Tuple[str, str]], str]:
-            - If the item usage is successful, a tuple containing:
-                - The result of the item usage for the active player.
-                - The result of the item usage for the passive player.
-            - If the item usage fails, a string indicating the failure reason.
         """
         player, target = self.solve_players()
         return use_item(item, player, target, self.dealer, self.shotgun,)
