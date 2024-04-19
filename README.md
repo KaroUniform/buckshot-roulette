@@ -1,7 +1,9 @@
 # Buckshot Roulette 🔫
 
-![greeting](assets/greeting.png)
 
+<p align="center">
+  <img src="assets/greeting.png" alt="Banner">
+</p>
 
 <p align="center">
     <a href="https://img.shields.io/badge/PRs-Welcome-red">
