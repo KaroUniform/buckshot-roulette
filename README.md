@@ -3,7 +3,11 @@
 ![greeting](assets/greeting.png)
 
 
-![Static Badge](https://img.shields.io/badge/PRs-welcome-red)
+<p align="center">
+    <a href="https://img.shields.io/badge/PRs-Welcome-red">
+        <img src="https://img.shields.io/badge/PRs-Welcome-red">
+    </a>
+</p>
 
 
 Buckshot Roulette is a Python text-based game where players engage in a deadly game of chance and strategy. Buckshot Roulette isn't your normal roulette game: join game with a 12-gauge shotgun, turning Russian Roulette into a high-stakes gamble for survival. The game mechanics are based on [Buckshot roulette by Mike Klubnika](https://store.steampowered.com/app/2835570/Buckshot_Roulette/)
