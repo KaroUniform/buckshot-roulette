@@ -57,6 +57,7 @@ class PPOConfig:
     max_pool_snapshots: int = 8
     eval_every_updates: int = 5
     eval_episodes: int = 100
+    hp_shaping: float = 0.0
     save_dir: str = "rl_runs"
     run_name: str = field(default_factory=lambda: f"ppo_{int(time.time())}")
 
@@ -89,9 +90,9 @@ def record_terminal_returns(
     return n
 
 
-def make_env_fn(pool: OpponentPool, seed: int):
+def make_env_fn(pool: OpponentPool, seed: int, hp_shaping: float = 0.0):
     def thunk():
-        env = SingleAgentBuckshotEnv(opponent_pool=pool)
+        env = SingleAgentBuckshotEnv(opponent_pool=pool, hp_shaping=hp_shaping)
         env.reset(seed=seed)
         return env
 
@@ -128,7 +129,7 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
 
     # Vectorized env
     envs = gym.vector.SyncVectorEnv(
-        [make_env_fn(pool, cfg.seed + i) for i in range(cfg.num_envs)]
+        [make_env_fn(pool, cfg.seed + i, cfg.hp_shaping) for i in range(cfg.num_envs)]
     )
 
     obs_dim = envs.single_observation_space["observation"].shape[0]
@@ -351,6 +352,13 @@ def parse_args() -> PPOConfig:
         default="",
         help="Comma-separated .pt paths to seed the initial opponent pool with (league).",
     )
+    p.add_argument(
+        "--hp-shaping",
+        type=float,
+        default=0.0,
+        help="alpha for dense HP reward shaping: alpha*(Δhp_me − Δhp_opp) per step. "
+             "0 = pure sparse ±1 terminal reward (default).",
+    )
     a = p.parse_args()
     cfg = PPOConfig(
         total_timesteps=a.total_timesteps,
@@ -365,6 +373,7 @@ def parse_args() -> PPOConfig:
         snapshot_every_updates=a.snapshot_every,
         eval_every_updates=a.eval_every,
         eval_episodes=a.eval_episodes,
+        hp_shaping=a.hp_shaping,
     )
     if a.run_name:
         cfg.run_name = a.run_name

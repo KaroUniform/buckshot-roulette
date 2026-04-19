@@ -37,7 +37,17 @@ class SingleAgentBuckshotEnv(gym.Env):
         self,
         opponent_pool: Optional[OpponentPool] = None,
         agent_pid: Optional[int] = None,
+        hp_shaping: float = 0.0,
     ) -> None:
+        """
+        hp_shaping: if > 0, adds dense per-step reward
+            alpha * (Δhp_me − Δhp_opp) where Δhp is the change in HP
+            (negative for damage taken, positive for smoke-heal) across
+            BOTH the agent's action and the opponent's response. Shaping
+            is potential-style: the full game is terminal ±1, so the
+            sparse signal still dominates at |alpha| < 0.5. Default 0
+            = vanilla sparse reward (back-compat).
+        """
         super().__init__()
         self.engine = BuckshotEngine()
         # Probe observation length on a throwaway engine so the real engine's
@@ -61,6 +71,7 @@ class SingleAgentBuckshotEnv(gym.Env):
 
         self.pool = opponent_pool or OpponentPool({"random": random_opponent})
         self.agent_pid = agent_pid
+        self.hp_shaping = float(hp_shaping)
         self._opp_fn: OpponentFn = random_opponent
         self._opp_name = "random"
         self._agent_pid_this_ep = 0
@@ -122,17 +133,22 @@ class SingleAgentBuckshotEnv(gym.Env):
             reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
             return obs, reward, True, False, {"opponent": self._opp_name}
 
+        # Snapshot HP for shaping (zero cost when hp_shaping == 0)
+        hp_me_before = self.engine.state.players[self._agent_pid_this_ep].hp
+        hp_opp_before = self.engine.state.players[1 - self._agent_pid_this_ep].hp
+
         # Agent acts
         self.engine.step(int(action))
         if self.engine.state.done:
-            return self._terminal_return()
+            return self._terminal_return(hp_me_before, hp_opp_before)
 
         # Opponent acts until either game ends or it's our turn again
         terminated, _ = self._play_opponent_until_agent_turn()
         if terminated:
-            return self._terminal_return()
+            return self._terminal_return(hp_me_before, hp_opp_before)
 
-        return self._obs(), 0.0, False, False, {"opponent": self._opp_name}
+        shaped = self._hp_shaping_reward(hp_me_before, hp_opp_before)
+        return self._obs(), shaped, False, False, {"opponent": self._opp_name}
 
     def render(self) -> Optional[str]:
         s = self.engine.state
@@ -173,7 +189,18 @@ class SingleAgentBuckshotEnv(gym.Env):
             return True, (1.0 if winner == self._agent_pid_this_ep else -1.0)
         return False, 0.0
 
-    def _terminal_return(self):
+    def _hp_shaping_reward(self, hp_me_before: int, hp_opp_before: int) -> float:
+        if self.hp_shaping == 0.0:
+            return 0.0
+        hp_me_after = self.engine.state.players[self._agent_pid_this_ep].hp
+        hp_opp_after = self.engine.state.players[1 - self._agent_pid_this_ep].hp
+        delta_me = hp_me_after - hp_me_before
+        delta_opp = hp_opp_after - hp_opp_before
+        return self.hp_shaping * float(delta_me - delta_opp)
+
+    def _terminal_return(self, hp_me_before: int = 0, hp_opp_before: int = 0):
         winner = self.engine.state.winner
         reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
+        if self.hp_shaping != 0.0:
+            reward += self._hp_shaping_reward(hp_me_before, hp_opp_before)
         return self._obs(), float(reward), True, False, {"opponent": self._opp_name}

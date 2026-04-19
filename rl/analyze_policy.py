@@ -153,16 +153,20 @@ def _scenario_smoke_useless_at_full_hp(e: BuckshotEngine) -> None:
 
 
 def _scenario_beer_when_certain_death_next_shot(e: BuckshotEngine) -> None:
-    """Agent at 1 HP, next shell is known LIVE, has Beer. USE_BEER ejects
-    it and might save life. Optimal: USE_BEER."""
+    """Agent at 1 HP, opp at FULL HP (so SHOOT_OPP cannot win this turn),
+    next shell known LIVE. USE_BEER ejects the lethal shell; SHOOT_OPP
+    deals 1 dmg then opp kills me next turn. Unambiguously beer is
+    better than shooting. Optimal: USE_BEER."""
     me = e.state.players[e.state.current_player]
+    opp = e.state.players[1 - e.state.current_player]
     me.hp = 1
+    opp.hp = opp.max_hp  # opp can't be killed this turn
     e.state.shells = [True, False, True]
     e.state.known_shells[e.state.current_player][0] = True
     inv = _empty_inventory()
     inv[int(Item.BEER)] = 1
     me.inventory = inv
-    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+    opp.inventory = _empty_inventory()
 
 
 def _scenario_phone_when_many_shells(e: BuckshotEngine) -> None:
@@ -257,12 +261,14 @@ def _scenario_cuff_before_saw_combo(e: BuckshotEngine) -> None:
 
 
 def _scenario_inverter_flip_known_live_to_save_life(e: BuckshotEngine) -> None:
-    """Agent at 1 HP, next shell KNOWN LIVE, would normally die to opp's
-    next shot. Agent has Inverter. Optimal: USE_INVERTER (flip live→blank)
-    so the opp's/own next shot is now blank and you survive. Then kill or
-    delay as needed. This is a survival play that requires creative use."""
+    """Agent at 1 HP, opp at FULL HP, next shell KNOWN LIVE. SHOOT_OPP
+    deals 1 dmg (opp still alive) → opp kills me. USE_INVERTER flips
+    live→blank: I shoot_self for free turn, next shell is live, kill.
+    Optimal: USE_INVERTER (survival > tiny damage)."""
     me = e.state.players[e.state.current_player]
+    opp = e.state.players[1 - e.state.current_player]
     me.hp = 1
+    opp.hp = opp.max_hp
     e.state.shells = [True, False]
     e.state.known_shells[e.state.current_player][0] = True
     inv = _empty_inventory()
