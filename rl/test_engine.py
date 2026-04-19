@@ -330,6 +330,80 @@ def test_clone_preserves_rng_stream():
     print("ok  clone_preserves_rng_stream")
 
 
+def test_handsaw_survives_beer_reload_mid_turn():
+    """Regression: if the player saws, then beers the last shell (forcing a
+    mid-turn chamber reload), the saw's damage_mult must persist — the saw
+    primed the *next shot*, which still hasn't happened."""
+    e = BuckshotEngine(seed=31)
+    e.reset()
+    # Set up: 1 shell left, player has saw + beer, opp at 2 HP
+    e.state.shells = [False]  # blank so next-shot check is clean
+    starter = e.state.current_player
+    me = e.state.players[starter]
+    opp = e.state.players[1 - starter]
+    me.inventory[:] = 0
+    opp.inventory[:] = 0
+    me.inventory[int(Item.HANDSAW)] = 1
+    me.inventory[int(Item.BEER)] = 1
+    # Saw: damage_mult -> 2
+    e.step(int(Action.USE_HANDSAW))
+    _assert(e.state.damage_mult == 2, "Saw must set mult=2")
+    # Beer ejects last shell → chamber reload
+    e.step(int(Action.USE_BEER))
+    _assert(e.state.damage_mult == 2,
+            f"Saw damage_mult must survive beer-triggered reload (got {e.state.damage_mult})")
+    _assert(e.state.current_player == starter, "Beer-after-reload must not pass turn")
+    print("ok  handsaw_survives_beer_reload_mid_turn")
+
+
+def test_handcuff_survives_round_reload_after_last_shot():
+    """Regression: cuff applied this turn must still skip the opponent's next
+    turn even when the shot that ends the turn also empties the chamber and
+    triggers a mid-step reload."""
+    e = BuckshotEngine(seed=37)
+    e.reset()
+    # 1 shell left (live), player has cuff, shoot opp empties chamber
+    e.state.shells = [True]
+    starter = e.state.current_player
+    me = e.state.players[starter]
+    opp = e.state.players[1 - starter]
+    me.inventory[:] = 0
+    opp.inventory[:] = 0
+    me.inventory[int(Item.HANDCUFF)] = 1
+    opp.hp = 3  # won't die from single live shot
+    e.step(int(Action.USE_HANDCUFF))
+    _assert(e.state.players[1 - starter].skip_next_turn, "Cuff must flag opponent")
+    e.step(int(Action.SHOOT_OPPONENT))
+    # After: chamber reloaded (new round), opponent was cuffed, so starter goes again
+    _assert(not e.state.done, "Game shouldn't be over")
+    _assert(e.state.current_player == starter,
+            "Cuffed opponent must skip; starter goes again after reload")
+    _assert(not e.state.players[1 - starter].skip_next_turn, "Cuff must clear after consumption")
+    print("ok  handcuff_survives_round_reload_after_last_shot")
+
+
+def test_handcuff_survives_beer_reload_mid_turn():
+    """Regression: cuff applied before a beer that empties the chamber must
+    persist across the reload — the opponent's next turn hasn't happened yet."""
+    e = BuckshotEngine(seed=41)
+    e.reset()
+    e.state.shells = [False]  # blank last shell
+    starter = e.state.current_player
+    me = e.state.players[starter]
+    opp = e.state.players[1 - starter]
+    me.inventory[:] = 0
+    opp.inventory[:] = 0
+    me.inventory[int(Item.HANDCUFF)] = 1
+    me.inventory[int(Item.BEER)] = 1
+    e.step(int(Action.USE_HANDCUFF))
+    _assert(e.state.players[1 - starter].skip_next_turn, "Cuff must flag opponent")
+    e.step(int(Action.USE_BEER))
+    _assert(e.state.players[1 - starter].skip_next_turn,
+            "Cuff must survive beer-triggered reload")
+    _assert(e.state.current_player == starter, "Beer doesn't end turn")
+    print("ok  handcuff_survives_beer_reload_mid_turn")
+
+
 def test_obs_size_matches_documented_layout():
     e = BuckshotEngine(seed=0)
     e.reset()
@@ -358,6 +432,9 @@ def main() -> int:
         test_pills_can_kill_and_end_game,
         test_random_vs_random_terminates,
         test_clone_preserves_rng_stream,
+        test_handsaw_survives_beer_reload_mid_turn,
+        test_handcuff_survives_round_reload_after_last_shot,
+        test_handcuff_survives_beer_reload_mid_turn,
         test_obs_size_matches_documented_layout,
     ]
     failures = 0

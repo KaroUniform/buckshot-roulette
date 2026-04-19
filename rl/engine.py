@@ -418,12 +418,15 @@ class BuckshotEngine:
                 s.winner = 1 - pid
                 return
         # The blank-self-shot rule ALWAYS preserves the turn — including when
-        # the blank was the last shell. Decide `keep` first, reload if needed,
-        # then advance with the right flag.
+        # the blank was the last shell. Decide `keep` first, advance (which
+        # consumes the next player's cuff flag if set), then reload if the
+        # chamber is empty. Order matters: _load_round resets cuff flags, so
+        # calling it before _advance_turn would silently wipe a handcuff that
+        # the current actor applied this turn.
         keep = self_target and was_blank
+        self._advance_turn(keep=keep)
         if not s.shells:
             self._load_round()
-        self._advance_turn(keep=keep)
 
     def _advance_turn(self, keep: bool) -> None:
         s = self.state
@@ -459,9 +462,17 @@ class BuckshotEngine:
                 s.known_shells[k] = shifted
             info["beer_ejected"] = "live" if ejected_live else "blank"
             if not s.shells:
-                self._load_round()
                 # Beer that empties the chamber doesn't end the turn in the
                 # original; current player keeps acting in the new round.
+                # Preserve turn-scoped effects across the reload: a Handsaw's
+                # damage boost and a Handcuff set earlier this turn must
+                # still apply to the upcoming shot / opponent turn.
+                saved_mult = s.damage_mult
+                saved_cuff = [p.skip_next_turn for p in s.players]
+                self._load_round()
+                s.damage_mult = saved_mult
+                for i, c in enumerate(saved_cuff):
+                    s.players[i].skip_next_turn = c
         elif item == Item.SMOKE:
             me.hp = min(me.hp + 1, me.max_hp)
         elif item == Item.HANDCUFF:
