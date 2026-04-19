@@ -367,3 +367,54 @@ SHOOT_OPPONENT here → instant -1). Until USE_BEER appears in rollouts
 with non-zero frequency in this state, the actor cannot learn to
 prefer it regardless of reward shape.
 
+---
+
+## E8 — user-proposed 4-component shaping (damage + heal + survive)
+
+| | |
+|---|---|
+| Date | 2026-04-20 |
+| Run dir | `rl_runs/E8_4comp_shaping/` |
+| Hypothesis | User proposal: big + for win, medium + for damage dealt (β=0.05), medium + for HP restored (γ=0.10), small + for round survived (δ=0.15), big − for loss. Terminal ±1 still dominates (shaped budget calibrated to ≈0.3-0.5 per episode). The *asymmetric* structure might give dense reward for the *right* behavior (e.g., heal on SMOKE) without the accumulating bias E5/E6 had. |
+| Setup | 3M steps; lr=1e-3; ent=0.01; hidden=256; γ=0.999; shaping β=0.05, γ=0.10, δ=0.15; 4 league champions in pool. ~25 min on 1× H100. |
+| Result | Final policy WR vs heuristics: random 0.94, aggressive 0.80, conservative 0.72. Mean `return_50` near terminal ≈ +1.0 (shaped). Internal round-robin: **monotone, no RPS cycles** (unlike E7). policy_final ranks #3 of 9, peak is snapshot_u1250. |
+
+### Behavioral probe: survival blindspot persists
+
+| Scenario | E7 | E8 | V-estimate change |
+|---|---|---|---|
+| `beer_when_certain_death_next_shot` | SHOOT_OPP 1.00 (V=−0.84) | SHOOT_OPP 1.00 (V=**−0.54**) | softer V |
+| `inverter_save_from_known_live` | SHOOT_OPP 1.00 (V=−0.71) | SHOOT_OPP 1.00 (V=**−0.50**) | softer V |
+| `pills_when_desperate` | USE_PILLS 1.00 | USE_PILLS 1.00 | same |
+| `cuff_saw_combo` | HANDSAW 0.79 / HANDCUFF 0.13 | **HANDCUFF 0.70** / HANDSAW 0.28 | *fixed* — plays the correct order |
+| `smoke_when_low_hp` | correct (1.00) | correct (1.00) | same |
+| `handsaw_lethal` | correct | correct | same |
+
+### Interpretation
+
+E8 improved **training stability** (monotone round-robin, no RPS
+dynamics) and **combo play** (`cuff_saw_combo` now prefers the correct
+cuff-first sequence — heal/survive bonuses apparently made the critic
+value longer tactical sequences). The critic's V estimates for s*
+states got less negative (−0.84 → −0.54), suggesting the shaping
+sprinkled some signal that the state isn't a *certain* loss.
+
+But — consistent with the E7 post-mortem — the **policy still picks
+SHOOT_OPPONENT with p=1.00** in the two survival scenarios. No amount
+of asymmetric dense reward fixed the visit-distribution problem: since
+USE_BEER / USE_INVERTER were never sampled in rollouts in these exact
+states, their advantage estimate stays at 0 (noise). heal_bonus only
+helps *once the agent already picks USE_SMOKE*; it does nothing when
+the actor puts p=0 on the heal action.
+
+This is the predicted result from the E7 post-mortem: mode collapse
+needs a *visit-forcing* mechanism, not a reward reshaping.
+
+### Next step → E9
+
+Scenario replay. `scenario_replay_prob=0.15` mutates 15% of resets to
+force (HP=1, known-live-next, one defensive item {BEER/SMOKE/INVERTER})
+states. With ~15% of rollouts starting in s*, the policy will sample
+alternative actions often enough that advantages become non-degenerate.
+No shaping for E9 — pure scenario replay on terminal ±1, with γ=0.999.
+
