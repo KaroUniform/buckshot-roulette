@@ -47,13 +47,13 @@ def test_action_masking_actually_masks():
 
 def test_gradients_flow():
     obs_dim = 47
-    p = ActorCritic(obs_dim, NUM_ACTIONS)
+    net = ActorCritic(obs_dim, NUM_ACTIONS)
     obs = torch.randn(16, obs_dim)
     mask = torch.ones(16, NUM_ACTIONS, dtype=torch.int8)
-    action, logp, ent, value = p.get_action_and_value(obs, mask)
+    action, logp, ent, value = net.get_action_and_value(obs, mask)
     loss = -logp.mean() + value.pow(2).mean() - 0.01 * ent.mean()
     loss.backward()
-    grad_norms = [p.grad.norm().item() for p in p.parameters() if p.grad is not None]
+    grad_norms = [param.grad.norm().item() for param in net.parameters() if param.grad is not None]
     _assert(all(g > 0 for g in grad_norms), "Some grads are zero — gradient flow issue")
     print(f"ok  gradients_flow (mean_grad_norm={np.mean(grad_norms):.4f})")
 

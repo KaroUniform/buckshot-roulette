@@ -202,9 +202,10 @@ def train(cfg: PPOConfig) -> ActorCritic:
 
             b_inds = np.arange(cfg.batch_size)
             clipfracs: list[float] = []
-            approx_kl_avg = 0.0
+            approx_kls: list[float] = []  # per-minibatch KLs across the whole update
             for epoch in range(cfg.update_epochs):
                 np.random.shuffle(b_inds)
+                epoch_kls: list[float] = []
                 for start in range(0, cfg.batch_size, cfg.minibatch_size):
                     end = start + cfg.minibatch_size
                     mb_inds = b_inds[start:end]
@@ -218,7 +219,8 @@ def train(cfg: PPOConfig) -> ActorCritic:
                     with torch.no_grad():
                         approx_kl = ((ratio - 1) - logratio).mean().item()
                         clipfracs.append(((ratio - 1.0).abs() > cfg.clip_coef).float().mean().item())
-                    approx_kl_avg = approx_kl
+                    epoch_kls.append(approx_kl)
+                    approx_kls.append(approx_kl)
 
                     mb_advantages = b_advantages[mb_inds]
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
@@ -237,8 +239,12 @@ def train(cfg: PPOConfig) -> ActorCritic:
                     nn.utils.clip_grad_norm_(policy.parameters(), cfg.max_grad_norm)
                     optimizer.step()
 
-                if cfg.target_kl is not None and approx_kl_avg > cfg.target_kl:
+                # Early stop based on the EPOCH MEAN KL, not a single minibatch.
+                if cfg.target_kl is not None and float(np.mean(epoch_kls)) > cfg.target_kl:
                     break
+
+            # Report the update-level mean KL (average across all minibatches)
+            approx_kl_avg = float(np.mean(approx_kls)) if approx_kls else 0.0
 
             # ---- League snapshot ----
             if update % cfg.snapshot_every_updates == 0:
