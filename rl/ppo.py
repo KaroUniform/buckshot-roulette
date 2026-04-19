@@ -367,6 +367,13 @@ def parse_args() -> PPOConfig:
         help="Probability in [0,1] of starting agent at HP=1 after reset. Oversamples "
              "defensive states (BEER/INVERTER survival). 0 = natural HP distribution.",
     )
+    p.add_argument(
+        "--gamma",
+        type=float,
+        default=0.995,
+        help="Discount factor for returns. Raise to 0.999 for better credit assignment "
+             "on long (15-20 step) episodes where terminal reward must reach early actions.",
+    )
     a = p.parse_args()
     cfg = PPOConfig(
         total_timesteps=a.total_timesteps,
@@ -383,6 +390,7 @@ def parse_args() -> PPOConfig:
         eval_episodes=a.eval_episodes,
         hp_shaping=a.hp_shaping,
         low_hp_prob=a.low_hp_prob,
+        gamma=a.gamma,
     )
     if a.run_name:
         cfg.run_name = a.run_name
