@@ -4,6 +4,15 @@ Heads-up (1v1) variant covering all 9 official Story / Double-or-Nothing items.
 Deterministic given a seed; no I/O; cheap to clone. Designed to be wrapped
 in PettingZoo / OpenSpiel envs without further refactoring.
 
+**Rules variant note:** this engine mirrors the user's existing Telegram-bot
+implementation under app/core/, which enforces "at most one non-adrenaline
+item per turn" (plus an adrenaline trigger that can pick ONE opponent item
+for the same turn). The actual Steam game is more permissive — there, a
+player can chain multiple items on one turn (e.g., Glass → Handsaw → shoot
+or Glass → Handcuff → shoot). We intentionally match the existing bot's
+rules so training transfers back to that environment; the `legal_actions`
+mask reflects THIS variant, not the original Steam rules.
+
 Action space (discrete, 19 actions):
     0  SHOOT_OPPONENT
     1  SHOOT_SELF

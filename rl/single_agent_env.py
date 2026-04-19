@@ -69,29 +69,48 @@ class SingleAgentBuckshotEnv(gym.Env):
     # ---- gym API ----
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
-        if seed is not None:
-            self._opp_rng = np.random.default_rng(seed + 1)
-        self.engine.reset(seed=seed)
+        # Rare edge case: the opponent's first moves can end the game
+        # (e.g., pills backfire into a kill). gymnasium's SyncVectorEnv
+        # doesn't learn the game ended during reset, so it would feed us
+        # a step() on a terminal state, creating phantom training
+        # transitions. Loop with perturbed seeds until we reset into a
+        # non-terminal state. In practice this almost always resolves in
+        # one attempt.
+        base_seed = seed
+        for attempt in range(50):
+            if base_seed is not None:
+                eff_seed = base_seed + attempt
+                self._opp_rng = np.random.default_rng(eff_seed + 1)
+            else:
+                eff_seed = None
+            self.engine.reset(seed=eff_seed)
 
-        if self.agent_pid is None:
-            self._agent_pid_this_ep = int(self._opp_rng.integers(0, 2))
-        else:
-            self._agent_pid_this_ep = self.agent_pid
+            if self.agent_pid is None:
+                self._agent_pid_this_ep = int(self._opp_rng.integers(0, 2))
+            else:
+                self._agent_pid_this_ep = self.agent_pid
 
-        self._opp_name, self._opp_fn = self.pool.sample(self._opp_rng)
+            self._opp_name, self._opp_fn = self.pool.sample(self._opp_rng)
 
-        # If opponent goes first, let them act until it's the agent's turn (or game ends)
-        terminated, terminal_reward = self._play_opponent_until_agent_turn()
-        if terminated:
-            return self._obs(), {
-                "opponent": self._opp_name,
-                "agent_pid": self._agent_pid_this_ep,
-                "_terminated_in_reset": True,
-                "_terminal_reward": terminal_reward,
-            }
+            terminated, terminal_reward = self._play_opponent_until_agent_turn()
+            if not terminated:
+                return self._obs(), {
+                    "opponent": self._opp_name,
+                    "agent_pid": self._agent_pid_this_ep,
+                }
+            # else: very rare — retry with a perturbed seed (or a fresh
+            # random seed if base_seed was None; np.random.default_rng()
+            # with no seed picks entropy from OS)
+
+        # Degenerate fallback: surface the terminal state with flags so
+        # callers (eval.py) can short-circuit; the PPO training loop
+        # also handles this safely via _was_dead_step-like semantics
+        # because terminations==True would fire on the next step.
         return self._obs(), {
             "opponent": self._opp_name,
             "agent_pid": self._agent_pid_this_ep,
+            "_terminated_in_reset": True,
+            "_terminal_reward": terminal_reward,
         }
 
     def step(self, action):

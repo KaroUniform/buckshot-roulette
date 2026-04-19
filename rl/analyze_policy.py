@@ -197,7 +197,10 @@ def probe_policy(policy: ActorCritic, scenarios: list[Scenario], device: str = "
             logits, value = policy.forward(obs_t)
             masked_logits = logits.masked_fill(mask_t == 0, -1e8)
             probs = torch.softmax(masked_logits, dim=-1).squeeze(0).cpu().numpy()
-        # Top 3 actions by prob
+        # Top 3 actions by prob. Masked logits are -1e8 so illegal probs
+        # are ~0, but zero out illegal entries explicitly before argmax so
+        # the "best action" can never report an illegal action even on tie.
+        legal_probs = np.where(mask == 1, probs, -1.0)
         top_ids = np.argsort(-probs)
         top = [(int(i), float(probs[i])) for i in top_ids if mask[i] == 1][:3]
         rows.append({
@@ -206,7 +209,7 @@ def probe_policy(policy: ActorCritic, scenarios: list[Scenario], device: str = "
             "expected": sc.optimal_action_hint,
             "value_estimate": float(value.item()),
             "top_actions": [(_format_action(i), p) for i, p in top],
-            "argmax": _format_action(int(np.argmax(probs))),
+            "argmax": _format_action(int(np.argmax(legal_probs))),
         })
     return rows
 
