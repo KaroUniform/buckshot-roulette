@@ -15,6 +15,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -97,7 +98,7 @@ def make_env_fn(pool: OpponentPool, seed: int):
     return thunk
 
 
-def train(cfg: PPOConfig) -> ActorCritic:
+def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> ActorCritic:
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     device = torch.device(cfg.device)
@@ -105,8 +106,25 @@ def train(cfg: PPOConfig) -> ActorCritic:
     run_dir = os.path.join(cfg.save_dir, cfg.run_name)
     os.makedirs(run_dir, exist_ok=True)
 
-    # Initial league: random + rule-based
+    # Initial league: random + rule-based, plus any extra frozen NN opponents
     pool = OpponentPool(dict(NAMED_OPPONENTS))
+    if extra_opponent_ckpts:
+        for path in extra_opponent_ckpts:
+            try:
+                state = torch.load(path, map_location=device, weights_only=True)
+                obs_dim = state["body.0.weight"].shape[1]
+                hidden = state["body.0.weight"].shape[0]
+                net = ActorCritic(obs_dim, NUM_ACTIONS, hidden=hidden).to(device)
+                net.load_state_dict(state)
+                net.eval()
+                for p in net.parameters():
+                    p.requires_grad_(False)
+                # Use the filename (without .pt) as the pool key
+                label = os.path.splitext(os.path.basename(path))[0]
+                pool.add(f"extra:{label}", make_frozen_policy_opponent(net, device=cfg.device), weight=1.0)
+                print(f"[train] added extra opponent {label} from {path}")
+            except Exception as exc:
+                print(f"[train] WARNING: could not load extra opponent {path}: {exc}")
 
     # Vectorized env
     envs = gym.vector.SyncVectorEnv(
@@ -327,6 +345,12 @@ def parse_args() -> PPOConfig:
     p.add_argument("--snapshot-every", type=int, default=10)
     p.add_argument("--eval-every", type=int, default=5)
     p.add_argument("--eval-episodes", type=int, default=100)
+    p.add_argument(
+        "--extra-opponent-ckpts",
+        type=str,
+        default="",
+        help="Comma-separated .pt paths to seed the initial opponent pool with (league).",
+    )
     a = p.parse_args()
     cfg = PPOConfig(
         total_timesteps=a.total_timesteps,
@@ -344,8 +368,13 @@ def parse_args() -> PPOConfig:
     )
     if a.run_name:
         cfg.run_name = a.run_name
+    extras = [s.strip() for s in a.extra_opponent_ckpts.split(",") if s.strip()]
+    # Stash extras on cfg so caller can pass them to train()
+    cfg._extra_opponent_ckpts = extras  # type: ignore
     return cfg
 
 
 if __name__ == "__main__":
-    train(parse_args())
+    _cfg = parse_args()
+    _extras = getattr(_cfg, "_extra_opponent_ckpts", [])
+    train(_cfg, extra_opponent_ckpts=_extras or None)
