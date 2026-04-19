@@ -1,0 +1,3 @@
+numpy>=1.24
+gymnasium>=1.0
+pettingzoo>=1.25
