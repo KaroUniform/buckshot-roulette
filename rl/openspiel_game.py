@@ -93,6 +93,11 @@ class SimpleBuckshotState(pyspiel.State):
         self._hps = [self._hp_max, self._hp_max]
         self._shells: list[bool] = []  # index 0 = next shot
         self._cur_player = pyspiel.PlayerId.CHANCE  # round 1 begins with shell deal
+        # The seat to resume on AFTER the next chance node (shell deal). Defaults
+        # to player 0 for the game start; updated when a blank-self-shot empties
+        # the chamber so the shooter correctly keeps their turn across the
+        # reload (parallels BuckshotEngine._end_turn_after_shot's `keep` logic).
+        self._next_player_after_chance = 0
         self._winner: Optional[int] = None
         self._n_round_start_chance_actions = math.comb(
             self._n_live_total + self._n_blank_total, self._n_live_total
@@ -127,10 +132,10 @@ class SimpleBuckshotState(pyspiel.State):
     def _apply_action(self, action: int) -> None:
         if self.is_chance_node():
             self._shells = list(self._perms[action])
-            # Player 0 always opens the round in this simplified version.
-            # (We could randomize via a second chance node, but it doesn't
-            # affect Nash strategy — both seats see the same info structure.)
-            self._cur_player = 0
+            # Resume on whoever was deferred — game start defaults to p0;
+            # after a blank-self-shot that emptied the chamber, the shooter
+            # keeps the turn across the reload.
+            self._cur_player = self._next_player_after_chance
             return
 
         actor = self._cur_player
@@ -142,15 +147,16 @@ class SimpleBuckshotState(pyspiel.State):
                 self._winner = 1 - target
                 return
 
-        # Turn flow: blank self-shot keeps the turn; otherwise pass.
-        if action == _SHOOT_SELF and not live:
-            pass  # keep turn
-        else:
-            self._cur_player = 1 - actor
+        # Decide the next seat BEFORE checking reload. Blank-self-shot
+        # preserves the turn — including when it empties the chamber.
+        keep_turn = action == _SHOOT_SELF and not live
+        next_seat = actor if keep_turn else (1 - actor)
 
-        # Reload if shells exhausted
         if not self._shells:
             self._cur_player = pyspiel.PlayerId.CHANCE
+            self._next_player_after_chance = next_seat
+        else:
+            self._cur_player = next_seat
 
     def returns(self) -> list[float]:
         if self._winner is None:
@@ -229,6 +235,7 @@ class SimpleBuckshotState(pyspiel.State):
         new._hps = list(self._hps)
         new._shells = list(self._shells)
         new._cur_player = self._cur_player
+        new._next_player_after_chance = self._next_player_after_chance
         new._winner = self._winner
         new._n_round_start_chance_actions = self._n_round_start_chance_actions
         new._perms = self._perms

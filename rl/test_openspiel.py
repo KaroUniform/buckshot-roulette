@@ -9,6 +9,7 @@ import numpy as np
 import pyspiel
 
 import rl.openspiel_game  # registers simple_buckshot
+from rl.openspiel_game import _SHOOT_OPPONENT, _SHOOT_SELF  # noqa: F401
 
 
 def _assert(cond, msg):
@@ -82,6 +83,36 @@ def test_clone_preserves_state():
     print("ok  clone_preserves_state")
 
 
+def test_blank_self_shot_on_last_shell_preserved_across_reload():
+    """Regression: in the OpenSpiel wrapper, a blank self-shot that empties
+    the chamber must keep the turn with the shooter AFTER the reload chance
+    node resolves. Before the fix, chance always handed the turn to player 0,
+    stealing player 1's keep-turn.
+
+    We force a one-shell blank chamber via direct state mutation since the
+    default shell composition (≥1 live + ≥1 blank) never naturally reaches
+    a state where the LAST shell is blank without additional intermediate
+    play that would be fragile to express.
+    """
+    g = pyspiel.load_game("simple_buckshot")
+    s = g.new_initial_state()
+    # Resolve the initial chance node (pick any outcome).
+    s.apply_action(s.chance_outcomes()[0][0])
+    # Force: player 1's turn, only a single blank shell left.
+    s._shells = [False]
+    s._cur_player = 1
+    actor_before = s.current_player()
+    s.apply_action(_SHOOT_SELF)
+    _assert(s.is_chance_node(), "Emptied chamber must trigger a reload chance node")
+    # Resolve reload chance; actor should resume afterwards.
+    s.apply_action(s.chance_outcomes()[0][0])
+    _assert(
+        s.current_player() == actor_before,
+        f"Blank self-shot keep-turn was stolen: expected player {actor_before}, got {s.current_player()}",
+    )
+    print("ok  blank_self_shot_on_last_shell_preserved_across_reload")
+
+
 def test_cfr_converges_quickly():
     """Sanity check: CFR+ on the default game should drive nash_conv well
     below 0.01 within 100 iterations. If this regresses, CFR isn't
@@ -103,6 +134,7 @@ def main() -> int:
         test_initial_state_is_chance_node,
         test_random_episode_terminates_with_zero_sum,
         test_clone_preserves_state,
+        test_blank_self_shot_on_last_shell_preserved_across_reload,
         test_cfr_converges_quickly,
     ]
     failures = 0

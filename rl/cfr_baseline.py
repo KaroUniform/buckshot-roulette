@@ -39,31 +39,29 @@ def run_cfr(
     )
 
     metrics_path = os.path.join(out_dir, "cfr_metrics.jsonl")
-    metrics_f = open(metrics_path, "w")
-    history = []
+    history: list = []
     t_start = time.time()
     last_nash = None
 
-    for i in range(1, iterations + 1):
-        solver.evaluate_and_update_policy()
-        if i % log_every == 0 or i == 1 or i == iterations:
-            avg = solver.average_policy()
-            nash = exploitability.nash_conv(game, avg)
-            elapsed = time.time() - t_start
-            entry = {
-                "iter": i,
-                "nash_conv": float(nash),
-                "elapsed_s": float(elapsed),
-            }
-            metrics_f.write(json.dumps(entry) + "\n")
-            metrics_f.flush()
-            history.append(entry)
-            print(
-                f"iter {i:>5} nash_conv={nash:.6f}  elapsed={elapsed:6.1f}s"
-            )
-            last_nash = nash
-
-    metrics_f.close()
+    with open(metrics_path, "w") as metrics_f:
+        for i in range(1, iterations + 1):
+            solver.evaluate_and_update_policy()
+            if i % log_every == 0 or i == 1 or i == iterations:
+                avg = solver.average_policy()
+                nash = exploitability.nash_conv(game, avg)
+                elapsed = time.time() - t_start
+                entry = {
+                    "iter": i,
+                    "nash_conv": float(nash),
+                    "elapsed_s": float(elapsed),
+                }
+                metrics_f.write(json.dumps(entry) + "\n")
+                metrics_f.flush()
+                history.append(entry)
+                print(
+                    f"iter {i:>5} nash_conv={nash:.6f}  elapsed={elapsed:6.1f}s"
+                )
+                last_nash = nash
 
     # Save the average policy as a tabular dict[info_state_str] -> dict[action]->prob
     avg = solver.average_policy()
