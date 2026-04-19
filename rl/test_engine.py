@@ -109,6 +109,33 @@ def test_blank_self_shot_keeps_turn():
     print("ok  blank_self_shot_keeps_turn")
 
 
+def test_blank_self_shot_on_last_shell_still_keeps_turn():
+    """Regression: before the fix, if the last shell was blank and the
+    shooter fired it at themselves, the recharge branch ran first and
+    passed the turn. The blank-self-shot rule must apply regardless of
+    whether the chamber ends up empty."""
+    e = BuckshotEngine(seed=31)
+    e.reset()
+    # Give both players enough HP so that reload-on-empty triggers without
+    # death. Force the last (and only) remaining shell to be blank.
+    e.state.shells = [False]
+    for p in e.state.players:
+        p.hp = 3
+        p.max_hp = 3
+    starter = e.state.current_player
+    e.step(int(Action.SHOOT_SELF))
+    _assert(not e.state.done, "Blank self-shot must not end the game")
+    _assert(
+        e.state.current_player == starter,
+        "Blank self-shot must keep the turn even when it empties the chamber",
+    )
+    _assert(
+        e.state.players[starter].hp == 3,
+        "Blank shouldn't damage the shooter",
+    )
+    print("ok  blank_self_shot_on_last_shell_still_keeps_turn")
+
+
 def test_live_self_shot_passes_turn_and_damages():
     e = BuckshotEngine(seed=13)
     e.reset()
@@ -293,6 +320,7 @@ def main() -> int:
         test_smoke_caps_at_max_hp,
         test_handsaw_doubles_damage_then_resets,
         test_blank_self_shot_keeps_turn,
+        test_blank_self_shot_on_last_shell_still_keeps_turn,
         test_live_self_shot_passes_turn_and_damages,
         test_handcuffs_skip_opponent_turn,
         test_inverter_flips_next_shell,

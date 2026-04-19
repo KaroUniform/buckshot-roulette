@@ -120,7 +120,6 @@ class GameState:
     known_shells: list  # [dict, dict]
     done: bool = False
     winner: Optional[int] = None
-    last_shot_was_blank_self: bool = False  # informational; used for turn flow
 
 
 class BuckshotEngine:
@@ -394,16 +393,13 @@ class BuckshotEngine:
                 s.done = True
                 s.winner = 1 - pid
                 return
-        # Recharge if empty
+        # The blank-self-shot rule ALWAYS preserves the turn — including when
+        # the blank was the last shell. Decide `keep` first, reload if needed,
+        # then advance with the right flag.
+        keep = self_target and was_blank
         if not s.shells:
             self._load_round()
-            self._advance_turn(keep=False)
-            return
-        if self_target and was_blank:
-            # Blank self-shot: keep turn
-            self._advance_turn(keep=True)
-        else:
-            self._advance_turn(keep=False)
+        self._advance_turn(keep=keep)
 
     def _advance_turn(self, keep: bool) -> None:
         s = self.state
