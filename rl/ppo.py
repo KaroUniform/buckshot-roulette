@@ -62,6 +62,7 @@ class PPOConfig:
     damage_bonus: float = 0.0
     heal_bonus: float = 0.0
     round_survive_bonus: float = 0.0
+    scenario_replay_prob: float = 0.0
     save_dir: str = "rl_runs"
     run_name: str = field(default_factory=lambda: f"ppo_{int(time.time())}")
 
@@ -116,6 +117,7 @@ def make_env_fn(
     damage_bonus: float = 0.0,
     heal_bonus: float = 0.0,
     round_survive_bonus: float = 0.0,
+    scenario_replay_prob: float = 0.0,
 ):
     def thunk():
         env = SingleAgentBuckshotEnv(
@@ -125,6 +127,7 @@ def make_env_fn(
             damage_bonus=damage_bonus,
             heal_bonus=heal_bonus,
             round_survive_bonus=round_survive_bonus,
+            scenario_replay_prob=scenario_replay_prob,
         )
         env.reset(seed=seed)
         return env
@@ -171,6 +174,7 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
                 cfg.damage_bonus,
                 cfg.heal_bonus,
                 cfg.round_survive_bonus,
+                cfg.scenario_replay_prob,
             )
             for i in range(cfg.num_envs)
         ]
@@ -444,6 +448,16 @@ def parse_args() -> PPOConfig:
              "Sparse signal (typical ep has 1-3 reloads), encourages reaching "
              "new rounds rather than dying in the current chamber.",
     )
+    p.add_argument(
+        "--scenario-replay-prob",
+        type=float,
+        default=0.0,
+        help="E9: probability of overriding env reset with a 'survival blindspot' "
+             "scenario (1HP + known-live next + one of BEER/SMOKE/INVERTER). Forces "
+             "the actor to visit s* states often enough that the alternative-to-shoot "
+             "appears in on-policy rollouts. Reward signal stays terminal ±1; we only "
+             "fix the *visit distribution*. Recommended start: 0.15.",
+    )
     a = p.parse_args()
     cfg = PPOConfig(
         total_timesteps=a.total_timesteps,
@@ -464,6 +478,7 @@ def parse_args() -> PPOConfig:
         damage_bonus=a.damage_bonus,
         heal_bonus=a.heal_bonus,
         round_survive_bonus=a.round_survive_bonus,
+        scenario_replay_prob=a.scenario_replay_prob,
     )
     if a.run_name:
         cfg.run_name = a.run_name

@@ -42,6 +42,7 @@ class SingleAgentBuckshotEnv(gym.Env):
         damage_bonus: float = 0.0,
         heal_bonus: float = 0.0,
         round_survive_bonus: float = 0.0,
+        scenario_replay_prob: float = 0.0,
     ) -> None:
         """
         hp_shaping: if > 0, adds dense per-step reward
@@ -80,6 +81,22 @@ class SingleAgentBuckshotEnv(gym.Env):
         winning episode yields total shaped ≈ 0.3-0.5 << terminal +1,
         so the win signal still dominates unlike E5/E6's α=0.05
         symmetric shaping which accumulated to ±1.5 per episode.
+
+        scenario_replay_prob: if > 0, with probability p the engine's
+            natural reset state is overridden with a hand-picked
+            "defensive scenario" — agent at 1HP, known-live next shell,
+            inventory containing a defensive item (BEER / INVERTER /
+            SMOKE). The reward signal stays terminal ±1 (no per-action
+            heuristic); we only force the agent to *visit* states where
+            the alternative-to-shoot has positive on-policy advantage
+            often enough that PPO's ratio-clipped update can flow toward
+            it. E5–E7 confirmed the survival blindspot is mode collapse,
+            not credit assignment: the critic correctly predicts V≈-0.7
+            in s* states but the actor still picks SHOOT_OPPONENT with
+            p=1.00 because USE_BEER never appeared in rollouts. This
+            forces it to. Scenarios are seeded by the per-env RNG so
+            different seeds produce different (but in-distribution)
+            mutations.
         """
         super().__init__()
         self.engine = BuckshotEngine()
@@ -109,6 +126,7 @@ class SingleAgentBuckshotEnv(gym.Env):
         self.damage_bonus = float(damage_bonus)
         self.heal_bonus = float(heal_bonus)
         self.round_survive_bonus = float(round_survive_bonus)
+        self.scenario_replay_prob = float(scenario_replay_prob)
         self._opp_fn: OpponentFn = random_opponent
         self._opp_name = "random"
         self._agent_pid_this_ep = 0
@@ -147,6 +165,9 @@ class SingleAgentBuckshotEnv(gym.Env):
                 # legal (hp < max_hp) and INVERTER / BEER have their usual
                 # survival value.
                 self.engine.state.players[self._agent_pid_this_ep].hp = 1
+
+            if self.scenario_replay_prob > 0.0 and self._opp_rng.random() < self.scenario_replay_prob:
+                self._inject_defensive_scenario(self._opp_rng)
 
             terminated, terminal_reward = self._play_opponent_until_agent_turn()
             if not terminated:
@@ -207,6 +228,86 @@ class SingleAgentBuckshotEnv(gym.Env):
         )
 
     # ---- internals ----
+
+    # Defensive items, in inventory-encoding order (Item enum).
+    # Each scenario gives the agent ONE of these so SHOOT_OPPONENT is
+    # not the only legal-and-survivable choice. The exact correct
+    # response depends on the item — we don't tell the agent which one;
+    # PPO has to discover it.
+    _SCENARIO_DEFENSIVE_ITEMS = (1, 2, 8)  # BEER, SMOKE, INVERTER
+
+    def _inject_defensive_scenario(self, rng: np.random.Generator) -> None:
+        """Mutate engine.state into a 'survival blindspot' configuration.
+
+        After this call:
+          - Agent is at 1 HP (max_hp untouched so SMOKE remains usable).
+          - Agent's known_shells says position 0 is LIVE.
+          - shells[0] is actually live (consistent with knowledge).
+          - Agent has exactly one defensive item: BEER, SMOKE, or INVERTER.
+          - It is the agent's turn.
+          - Opponent state is the engine-sampled default (random HP, random
+            inventory) so the agent does not memorize a fixed opponent.
+          - damage_mult, adrenaline_active, cuffs are all reset to the
+            "fresh turn" defaults so the next legal-action mask is clean.
+
+        The agent's *correct* play differs by item (BEER ejects the live
+        shell, SMOKE heals to delay, INVERTER flips it to blank). We do
+        not encode any of that — the natural ±1 terminal reward provides
+        the gradient. We only ensure the actor encounters the state
+        often enough that the alternative-to-shoot becomes a real
+        on-policy choice instead of a never-visited mode.
+        """
+        s = self.engine.state
+        pid = self._agent_pid_this_ep
+        opp = 1 - pid
+
+        # 1. HP setup
+        s.players[pid].hp = 1
+        # opponent stays as engine-sampled, but ensure they're alive (they
+        # always are after engine.reset, but defensive)
+        if s.players[opp].hp <= 0:
+            s.players[opp].hp = max(2, s.players[opp].max_hp)
+
+        # 2. Item setup: clear agent's inventory, give exactly ONE of the
+        #    defensive items. (Opponent inventory left as engine-sampled.)
+        s.players[pid].inventory[:] = 0
+        item_id = int(rng.choice(self._SCENARIO_DEFENSIVE_ITEMS))
+        s.players[pid].inventory[item_id] = 1
+
+        # 3. Shotgun setup: at least 2 shells so BEER/INVERTER aren't
+        #    instantly mooted by an empty chamber. First shell live; second
+        #    is random; further shells are engine-shuffled live/blank.
+        n_shells = max(2, len(s.shells)) if s.shells else int(rng.integers(2, 5))
+        # Build a chamber: live first, then a random tail with at least
+        # one of each remaining if n_shells > 2.
+        tail_n = n_shells - 1
+        # Tail composition: at least 1 blank so BEER->next-shot can be safe
+        # if agent picks BEER + SHOOT_SELF combo. Guarantee 1 blank in tail.
+        tail_live = int(rng.integers(0, max(1, tail_n)))
+        tail_blank = tail_n - tail_live
+        if tail_blank == 0 and tail_n > 0:
+            tail_live -= 1
+            tail_blank = 1
+        tail = [True] * tail_live + [False] * tail_blank
+        rng.shuffle(tail)
+        s.shells = [True] + tail
+
+        # 4. Agent's known_shells: only position 0 is known (live). Other
+        #    positions stay unknown so the agent can't trivially win by
+        #    knowing the whole chamber.
+        s.known_shells[pid] = {0: True}
+        s.known_shells[opp] = {}  # opponent's knowledge wiped to match a fresh state
+
+        # 5. Engine-state hygiene: clean turn boundary
+        s.damage_mult = 1
+        s.adrenaline_active = False
+        s.players[pid].skip_next_turn = False
+        s.players[opp].skip_next_turn = False
+        s.current_player = pid
+        s.done = False
+        s.winner = None
+        # n_reloads stays at whatever the engine's reset() set it to (0);
+        # don't touch — round_survive_bonus uses the delta, not the absolute.
 
     def _obs(self) -> dict:
         obs = self.engine.observation(self._agent_pid_this_ep).astype(np.float32)

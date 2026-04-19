@@ -105,9 +105,15 @@ def test_opponent_pool_sampling_distribution():
 
 
 def test_policy_winrate_against_each_opponent_is_in_range():
-    """Random policy should win ~50% vs random, may differ vs rule-based."""
+    """Random policy should win ~50% vs random and within reasonable bounds vs
+    weak heuristics. Strong rule-based opponents (e.g. `strong_baseline`) are
+    explicitly designed to dominate random — for them we only check the rate
+    is non-degenerate (>0%, <100%)."""
     env_factory = lambda fn: SingleAgentBuckshotEnv(opponent_pool=OpponentPool({"x": fn}))
     rng = np.random.default_rng(0)
+    # Tight bounds for the calibration baselines; loose bounds for opponents
+    # whose name announces them as strong.
+    LOOSE_NAMES = {"strong_baseline"}
     for name, fn in NAMED_OPPONENTS.items():
         env = env_factory(fn)
         wins = 0
@@ -127,8 +133,10 @@ def test_policy_winrate_against_each_opponent_is_in_range():
                 if done and r > 0:
                     wins += 1
         wr = wins / n
-        # Basically a sanity check — shouldn't be 0% or 100%
-        _assert(0.1 < wr < 0.9, f"Random vs {name} win rate suspicious: {wr:.2f}")
+        if name in LOOSE_NAMES:
+            _assert(0.0 < wr < 1.0, f"Random vs {name} degenerate: {wr:.2f}")
+        else:
+            _assert(0.1 < wr < 0.9, f"Random vs {name} win rate suspicious: {wr:.2f}")
         print(f"     random vs {name}: {wr:.2f}")
     print("ok  policy_winrate_against_each_opponent_is_in_range")
 
@@ -253,6 +261,124 @@ def test_e8_shaping_fires_and_respects_signs():
     print("ok  e8_shaping_zero_coefs_stays_sparse")
 
 
+def test_e9_scenario_replay_injects_survival_state():
+    """With scenario_replay_prob=1.0, every reset should produce a state where:
+       - agent HP == 1
+       - agent has exactly one of {BEER, SMOKE, INVERTER}
+       - agent's known_shells says position 0 is LIVE
+       - shells[0] is actually live (knowledge consistent)
+       - it is the agent's turn
+       - SHOOT_OPPONENT *and* the defensive item action are both legal
+    """
+    from rl.engine import Action, Item
+    from collections import Counter
+
+    pool = OpponentPool({"random": random_opponent})
+    env = SingleAgentBuckshotEnv(
+        opponent_pool=pool, agent_pid=0, scenario_replay_prob=1.0,
+    )
+
+    item_counts = Counter()
+    for seed in range(60):
+        obs, info = env.reset(seed=seed)
+        s = env.engine.state
+        pid = info["agent_pid"]
+        _assert(s.players[pid].hp == 1, f"seed {seed}: agent HP={s.players[pid].hp} expected 1")
+        # Exactly one defensive item
+        inv = s.players[pid].inventory
+        defensive_count = int(inv[int(Item.BEER)]) + int(inv[int(Item.SMOKE)]) + int(inv[int(Item.INVERTER)])
+        _assert(defensive_count == 1,
+                f"seed {seed}: {defensive_count} defensive items, expected exactly 1; inv={inv.tolist()}")
+        # No other items
+        total_items = int(inv.sum())
+        _assert(total_items == 1, f"seed {seed}: total items={total_items}, expected 1")
+        # Knowledge says slot 0 is live
+        _assert(s.known_shells[pid].get(0) is True,
+                f"seed {seed}: known_shells[{pid}]={s.known_shells[pid]}; expected pos 0 = True")
+        # Actual chamber matches knowledge
+        _assert(len(s.shells) >= 2, f"seed {seed}: only {len(s.shells)} shells; need ≥2")
+        _assert(s.shells[0] is True, f"seed {seed}: shells[0]={s.shells[0]} but knowledge says live")
+        # Agent's turn after reset (no opp moves were needed since current_player==pid)
+        _assert(env.engine.state.current_player == pid,
+                f"seed {seed}: not agent's turn after reset")
+        # Both SHOOT_OPPONENT and the defensive item-use are legal
+        mask = obs["action_mask"]
+        _assert(mask[int(Action.SHOOT_OPPONENT)] == 1, f"seed {seed}: SHOOT_OPPONENT not legal")
+        item_action_for = {
+            int(Item.BEER): int(Action.USE_BEER),
+            int(Item.SMOKE): int(Action.USE_SMOKE),
+            int(Item.INVERTER): int(Action.USE_INVERTER),
+        }
+        held_item = next(i for i in (Item.BEER, Item.SMOKE, Item.INVERTER) if inv[int(i)] > 0)
+        item_action = item_action_for[int(held_item)]
+        _assert(mask[item_action] == 1,
+                f"seed {seed}: holding {held_item.name} but USE action not legal; mask={mask.tolist()}")
+        item_counts[held_item.name] += 1
+
+    # All three defensive items should appear with reasonable frequency
+    for name in ("BEER", "SMOKE", "INVERTER"):
+        _assert(item_counts[name] >= 5,
+                f"defensive item {name} appeared only {item_counts[name]} times in 60 resets; sampling skew?")
+    print(f"ok  e9_scenario_replay_injects_survival_state ({dict(item_counts)})")
+
+
+def test_e9_scenario_replay_disabled_by_default():
+    """With scenario_replay_prob=0, the agent's inventory should NOT be forced
+    to a single defensive item — the engine's natural item-distribution code
+    runs unchanged. (Agent HP can still be 1 if opponent damaged it during
+    pre-turn moves; that's natural distribution, not forced.)"""
+    from rl.engine import Item
+    pool = OpponentPool({"random": random_opponent})
+    env = SingleAgentBuckshotEnv(opponent_pool=pool, agent_pid=0)
+    forced_pattern_count = 0
+    for seed in range(60):
+        env.reset(seed=seed)
+        s = env.engine.state
+        inv = s.players[0].inventory
+        # The scenario forces inventory to exactly ONE of {BEER, SMOKE, INVERTER}
+        # AND total inventory == 1. Natural engine produces multi-item inventories
+        # most of the time, and single-item inventories are usually NOT defensive.
+        defensive_count = int(inv[int(Item.BEER)]) + int(inv[int(Item.SMOKE)]) + int(inv[int(Item.INVERTER)])
+        is_forced = (int(inv.sum()) == 1) and (defensive_count == 1) and (s.players[0].hp == 1)
+        if is_forced:
+            forced_pattern_count += 1
+    # The natural engine producing this exact pattern by chance is exponentially
+    # rare. Allow ≤1 to absorb genuine coincidence.
+    _assert(forced_pattern_count <= 1,
+            f"Without scenario_replay, the forced pattern (1HP + 1 defensive item) "
+            f"should be exponentially rare; got {forced_pattern_count}/60")
+    print(f"ok  e9_scenario_replay_disabled_by_default (forced-pattern hits {forced_pattern_count}/60)")
+
+
+def test_e9_scenario_replay_episode_completes():
+    """Random rollouts from injected scenarios should still terminate ±1."""
+    rng = np.random.default_rng(0)
+    pool = OpponentPool({"random": random_opponent})
+    env = SingleAgentBuckshotEnv(
+        opponent_pool=pool, agent_pid=0, scenario_replay_prob=1.0,
+    )
+    for _ in range(30):
+        obs, info = env.reset(seed=int(rng.integers(0, 1_000_000)))
+        if info.get("_terminated_in_reset"):
+            tr = info["_terminal_reward"]
+            _assert(tr in (1.0, -1.0), f"Bad reset-terminal reward: {tr}")
+            continue
+        done = False
+        terminal_reward = None
+        while not done:
+            mask = obs["action_mask"]
+            legal = np.flatnonzero(mask)
+            _assert(len(legal) > 0, "No legal actions mid-episode in scenario rollout")
+            a = int(rng.choice(legal))
+            obs, r, term, trunc, info = env.step(a)
+            done = term or trunc
+            if done:
+                terminal_reward = r
+        _assert(terminal_reward in (1.0, -1.0),
+                f"Bad terminal reward from scenario rollout: {terminal_reward}")
+    print("ok  e9_scenario_replay_episode_completes")
+
+
 def main() -> int:
     tests = [
         test_obs_and_action_spaces_present,
@@ -263,6 +389,9 @@ def main() -> int:
         test_policy_winrate_against_each_opponent_is_in_range,
         test_rule_based_opponents_never_pick_illegal_action,
         test_e8_shaping_fires_and_respects_signs,
+        test_e9_scenario_replay_injects_survival_state,
+        test_e9_scenario_replay_disabled_by_default,
+        test_e9_scenario_replay_episode_completes,
     ]
     failures = 0
     for t in tests:
