@@ -153,6 +153,106 @@ def test_rule_based_opponents_never_pick_illegal_action():
     print("ok  rule_based_opponents_never_pick_illegal_action")
 
 
+def test_e8_shaping_fires_and_respects_signs():
+    """Verify each E8 shaping component fires in isolation and sums correctly.
+    Uses a controlled step where we know exactly what happened."""
+    from rl.engine import Action, Item
+    # Pool with deterministic opponent that always shoots self (so opp never
+    # damages agent during our test step)
+    def noop_opp(obs, mask, rng):
+        # Prefer USE_SMOKE (illegal without smoke), fall back to self-shot
+        if mask[int(Action.SHOOT_SELF)]:
+            return int(Action.SHOOT_SELF)
+        return int(np.where(mask)[0][0])
+    pool = OpponentPool({"noop": noop_opp})
+
+    env = SingleAgentBuckshotEnv(
+        opponent_pool=pool,
+        agent_pid=0,
+        damage_bonus=0.05,
+        heal_bonus=0.10,
+        round_survive_bonus=0.15,
+    )
+    env.reset(seed=12345)
+    # Set up: agent HP below max (so heal can fire), known live next, has smoke
+    s = env.engine.state
+    s.current_player = 0
+    s.players[0].hp = 1  # room for heal
+    s.players[0].max_hp = 3
+    s.players[1].hp = 3
+    s.players[0].inventory[:] = 0
+    s.players[1].inventory[:] = 0
+    s.players[0].inventory[int(Item.SMOKE)] = 1
+    s.shells = [True, False]  # doesn't matter for smoke
+
+    # Step USE_SMOKE: Δhp_me = +1, Δhp_opp = 0, no reload → only heal bonus
+    obs, reward, term, trunc, info = env.step(int(Action.USE_SMOKE))
+    _assert(not term, "Smoke shouldn't end episode")
+    _assert(abs(reward - 0.10) < 1e-6,
+            f"Heal bonus expected 0.10, got {reward:.4f}")
+    print("ok  e8_shaping_heal_fires_solo")
+
+    # Fresh env: agent shoots opponent with 1 live shell → Δhp_opp = -1, damage bonus
+    env2 = SingleAgentBuckshotEnv(
+        opponent_pool=pool, agent_pid=0,
+        damage_bonus=0.05, heal_bonus=0.10, round_survive_bonus=0.15,
+    )
+    env2.reset(seed=77)
+    s2 = env2.engine.state
+    s2.current_player = 0
+    s2.players[0].hp = 3
+    s2.players[1].hp = 3
+    s2.shells = [True, False, True]  # live next — shooting opp deals 1, chamber still has 2
+    s2.n_reloads = 0
+    obs, reward, term, trunc, info = env2.step(int(Action.SHOOT_OPPONENT))
+    # After: opp.hp 3→2 (damage_bonus=0.05), no heal, no reload, opp takes turn
+    # Opp will self-shoot: blank or live. Either way damage_bonus for agent
+    # fires only on THIS step's Δhp_opp (over the full step window).
+    # Opp may take damage from self-shot → that's NOT agent's damage_bonus;
+    # but it IS reflected in delta_opp since we measure before vs after the
+    # whole step. So we might credit agent for opp self-damage.
+    # That's intentional per the user spec ("+damage dealt" = net damage to
+    # opp during our step; the agent's shot caused the encounter).
+    _assert(not term and reward >= 0.05,
+            f"Damage bonus should fire ≥0.05, got {reward:.4f}")
+    print("ok  e8_shaping_damage_fires_on_shot")
+
+    # Fresh env: force a reload via shooting last shell → round_survive fires
+    env3 = SingleAgentBuckshotEnv(
+        opponent_pool=pool, agent_pid=0,
+        damage_bonus=0.0, heal_bonus=0.0, round_survive_bonus=0.15,
+    )
+    env3.reset(seed=99)
+    s3 = env3.engine.state
+    s3.current_player = 0
+    s3.players[0].hp = 3
+    s3.players[1].hp = 3
+    s3.shells = [False]  # single blank; self-shot keeps turn and triggers reload
+    reloads_before = s3.n_reloads
+    obs, reward, term, trunc, info = env3.step(int(Action.SHOOT_SELF))
+    _assert(env3.engine.state.n_reloads > reloads_before,
+            "Reload should fire when chamber empties")
+    _assert(env3.engine.state.players[0].hp > 0,
+            "Agent should be alive after blank self-shot")
+    _assert(reward >= 0.15,
+            f"Round-survive bonus should fire ≥0.15, got {reward:.4f}")
+    print("ok  e8_shaping_round_survive_fires_on_reload")
+
+    # Back-compat: all shaping zero → reward is strictly 0 per non-terminal step
+    env4 = SingleAgentBuckshotEnv(opponent_pool=pool, agent_pid=0)
+    env4.reset(seed=55)
+    s4 = env4.engine.state
+    s4.current_player = 0
+    s4.players[0].hp = 2
+    s4.players[0].max_hp = 3
+    s4.players[0].inventory[:] = 0
+    s4.players[0].inventory[int(Item.SMOKE)] = 1
+    obs, reward, term, trunc, info = env4.step(int(Action.USE_SMOKE))
+    _assert(not term and reward == 0.0,
+            f"Zero-shaping reward must be exactly 0.0, got {reward}")
+    print("ok  e8_shaping_zero_coefs_stays_sparse")
+
+
 def main() -> int:
     tests = [
         test_obs_and_action_spaces_present,
@@ -162,6 +262,7 @@ def main() -> int:
         test_opponent_pool_sampling_distribution,
         test_policy_winrate_against_each_opponent_is_in_range,
         test_rule_based_opponents_never_pick_illegal_action,
+        test_e8_shaping_fires_and_respects_signs,
     ]
     failures = 0
     for t in tests:

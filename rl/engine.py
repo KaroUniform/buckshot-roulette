@@ -131,6 +131,11 @@ class GameState:
     known_shells: list  # [dict, dict]
     done: bool = False
     winner: Optional[int] = None
+    # Chamber reload counter. Set to 0 at reset (the initial _load_round is
+    # not a "round survived" event), incremented on every subsequent reload.
+    # Wrappers compare before/after a step to detect reloads for survival
+    # rewards.
+    n_reloads: int = 0
 
 
 class BuckshotEngine:
@@ -168,6 +173,9 @@ class BuckshotEngine:
             known_shells=[{}, {}],
         )
         self._load_round()
+        # First load is setup, not a "round survived" event — zero the counter
+        # so wrappers measure only mid-game reloads.
+        self.state.n_reloads = 0
         return self.state
 
     def clone(self) -> "BuckshotEngine":
@@ -371,6 +379,7 @@ class BuckshotEngine:
         # Reset cuffs at recharge (matches original game)
         s.players[0].skip_next_turn = False
         s.players[1].skip_next_turn = False
+        s.n_reloads += 1
         # Distribute items
         n_items = int(self.rng.choice(self.items_per_round_choices))
         for p in s.players:

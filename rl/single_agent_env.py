@@ -39,6 +39,9 @@ class SingleAgentBuckshotEnv(gym.Env):
         agent_pid: Optional[int] = None,
         hp_shaping: float = 0.0,
         low_hp_prob: float = 0.0,
+        damage_bonus: float = 0.0,
+        heal_bonus: float = 0.0,
+        round_survive_bonus: float = 0.0,
     ) -> None:
         """
         hp_shaping: if > 0, adds dense per-step reward
@@ -58,6 +61,25 @@ class SingleAgentBuckshotEnv(gym.Env):
             AFTER engine.reset() and BEFORE the opponent's pre-turn
             moves, so the engine's own HP-range sampling still
             generates diverse opponent HPs. Default 0 = no curriculum.
+
+        damage_bonus: β for E8 multi-component shaping. Per step,
+            agent receives β * max(0, -Δhp_opp) — reward proportional
+            to damage dealt to opponent. Asymmetric vs hp_shaping:
+            does not penalize being damaged (terminal ±1 handles that).
+
+        heal_bonus: γ for E8. Per step, agent receives
+            γ * max(0, Δhp_me) — reward for HP restored (SMOKE,
+            good-pills). Cap is implicit since engine clamps to max_hp.
+
+        round_survive_bonus: δ for E8. Per step where n_reloads
+            increased AND agent is alive, agent receives δ. Sparse
+            (typical episodes have 1-3 reloads), rewards reaching a
+            new chamber alive.
+
+        All three E8 shaping terms have a calibrated budget: typical
+        winning episode yields total shaped ≈ 0.3-0.5 << terminal +1,
+        so the win signal still dominates unlike E5/E6's α=0.05
+        symmetric shaping which accumulated to ±1.5 per episode.
         """
         super().__init__()
         self.engine = BuckshotEngine()
@@ -84,6 +106,9 @@ class SingleAgentBuckshotEnv(gym.Env):
         self.agent_pid = agent_pid
         self.hp_shaping = float(hp_shaping)
         self.low_hp_prob = float(low_hp_prob)
+        self.damage_bonus = float(damage_bonus)
+        self.heal_bonus = float(heal_bonus)
+        self.round_survive_bonus = float(round_survive_bonus)
         self._opp_fn: OpponentFn = random_opponent
         self._opp_name = "random"
         self._agent_pid_this_ep = 0
@@ -153,21 +178,22 @@ class SingleAgentBuckshotEnv(gym.Env):
             reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
             return obs, reward, True, False, {"opponent": self._opp_name}
 
-        # Snapshot HP for shaping (zero cost when hp_shaping == 0)
+        # Snapshot state for shaping (zero cost when all shaping coefs == 0)
         hp_me_before = self.engine.state.players[self._agent_pid_this_ep].hp
         hp_opp_before = self.engine.state.players[1 - self._agent_pid_this_ep].hp
+        reloads_before = self.engine.state.n_reloads
 
         # Agent acts
         self.engine.step(int(action))
         if self.engine.state.done:
-            return self._terminal_return(hp_me_before, hp_opp_before)
+            return self._terminal_return(hp_me_before, hp_opp_before, reloads_before)
 
         # Opponent acts until either game ends or it's our turn again
         terminated, _ = self._play_opponent_until_agent_turn()
         if terminated:
-            return self._terminal_return(hp_me_before, hp_opp_before)
+            return self._terminal_return(hp_me_before, hp_opp_before, reloads_before)
 
-        shaped = self._hp_shaping_reward(hp_me_before, hp_opp_before)
+        shaped = self._shaped_reward(hp_me_before, hp_opp_before, reloads_before)
         return self._obs(), shaped, False, False, {"opponent": self._opp_name}
 
     def render(self) -> Optional[str]:
@@ -209,18 +235,50 @@ class SingleAgentBuckshotEnv(gym.Env):
             return True, (1.0 if winner == self._agent_pid_this_ep else -1.0)
         return False, 0.0
 
-    def _hp_shaping_reward(self, hp_me_before: int, hp_opp_before: int) -> float:
-        if self.hp_shaping == 0.0:
+    def _shaped_reward(
+        self, hp_me_before: int, hp_opp_before: int, reloads_before: int
+    ) -> float:
+        """Combined shaping: E5-style symmetric hp_shaping (back-compat) PLUS
+        E8-style asymmetric components (damage_bonus, heal_bonus,
+        round_survive_bonus). All terms use current engine state relative to
+        snapshotted before-values."""
+        if (
+            self.hp_shaping == 0.0
+            and self.damage_bonus == 0.0
+            and self.heal_bonus == 0.0
+            and self.round_survive_bonus == 0.0
+        ):
             return 0.0
-        hp_me_after = self.engine.state.players[self._agent_pid_this_ep].hp
-        hp_opp_after = self.engine.state.players[1 - self._agent_pid_this_ep].hp
+        s = self.engine.state
+        hp_me_after = s.players[self._agent_pid_this_ep].hp
+        hp_opp_after = s.players[1 - self._agent_pid_this_ep].hp
         delta_me = hp_me_after - hp_me_before
         delta_opp = hp_opp_after - hp_opp_before
-        return self.hp_shaping * float(delta_me - delta_opp)
 
-    def _terminal_return(self, hp_me_before: int = 0, hp_opp_before: int = 0):
+        r = 0.0
+        if self.hp_shaping != 0.0:
+            r += self.hp_shaping * float(delta_me - delta_opp)
+        if self.damage_bonus != 0.0:
+            r += self.damage_bonus * float(max(0, -delta_opp))
+        if self.heal_bonus != 0.0:
+            r += self.heal_bonus * float(max(0, delta_me))
+        if self.round_survive_bonus != 0.0:
+            reloads_delta = s.n_reloads - reloads_before
+            # Only credit if the agent is still alive at measurement time.
+            # On a terminal step where agent lost, hp_me_after <= 0 and we
+            # skip the bonus; opponent can still trigger reloads that the
+            # dead agent didn't "survive" into.
+            if reloads_delta > 0 and hp_me_after > 0:
+                r += self.round_survive_bonus * float(reloads_delta)
+        return r
+
+    def _terminal_return(
+        self,
+        hp_me_before: int = 0,
+        hp_opp_before: int = 0,
+        reloads_before: int = 0,
+    ):
         winner = self.engine.state.winner
         reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
-        if self.hp_shaping != 0.0:
-            reward += self._hp_shaping_reward(hp_me_before, hp_opp_before)
+        reward += self._shaped_reward(hp_me_before, hp_opp_before, reloads_before)
         return self._obs(), float(reward), True, False, {"opponent": self._opp_name}

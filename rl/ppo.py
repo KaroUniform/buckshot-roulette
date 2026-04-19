@@ -59,6 +59,9 @@ class PPOConfig:
     eval_episodes: int = 100
     hp_shaping: float = 0.0
     low_hp_prob: float = 0.0
+    damage_bonus: float = 0.0
+    heal_bonus: float = 0.0
+    round_survive_bonus: float = 0.0
     save_dir: str = "rl_runs"
     run_name: str = field(default_factory=lambda: f"ppo_{int(time.time())}")
 
@@ -91,9 +94,24 @@ def record_terminal_returns(
     return n
 
 
-def make_env_fn(pool: OpponentPool, seed: int, hp_shaping: float = 0.0, low_hp_prob: float = 0.0):
+def make_env_fn(
+    pool: OpponentPool,
+    seed: int,
+    hp_shaping: float = 0.0,
+    low_hp_prob: float = 0.0,
+    damage_bonus: float = 0.0,
+    heal_bonus: float = 0.0,
+    round_survive_bonus: float = 0.0,
+):
     def thunk():
-        env = SingleAgentBuckshotEnv(opponent_pool=pool, hp_shaping=hp_shaping, low_hp_prob=low_hp_prob)
+        env = SingleAgentBuckshotEnv(
+            opponent_pool=pool,
+            hp_shaping=hp_shaping,
+            low_hp_prob=low_hp_prob,
+            damage_bonus=damage_bonus,
+            heal_bonus=heal_bonus,
+            round_survive_bonus=round_survive_bonus,
+        )
         env.reset(seed=seed)
         return env
 
@@ -130,7 +148,18 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
 
     # Vectorized env
     envs = gym.vector.SyncVectorEnv(
-        [make_env_fn(pool, cfg.seed + i, cfg.hp_shaping, cfg.low_hp_prob) for i in range(cfg.num_envs)]
+        [
+            make_env_fn(
+                pool,
+                cfg.seed + i,
+                cfg.hp_shaping,
+                cfg.low_hp_prob,
+                cfg.damage_bonus,
+                cfg.heal_bonus,
+                cfg.round_survive_bonus,
+            )
+            for i in range(cfg.num_envs)
+        ]
     )
 
     obs_dim = envs.single_observation_space["observation"].shape[0]
@@ -374,6 +403,28 @@ def parse_args() -> PPOConfig:
         help="Discount factor for returns. Raise to 0.999 for better credit assignment "
              "on long (15-20 step) episodes where terminal reward must reach early actions.",
     )
+    p.add_argument(
+        "--damage-bonus",
+        type=float,
+        default=0.0,
+        help="E8 beta: per-step reward = beta * max(0, -Δhp_opp). Asymmetric: "
+             "rewards dealing damage without penalizing being damaged.",
+    )
+    p.add_argument(
+        "--heal-bonus",
+        type=float,
+        default=0.0,
+        help="E8 gamma: per-step reward = gamma * max(0, Δhp_me). Rewards HP "
+             "restored via SMOKE / good PILLS.",
+    )
+    p.add_argument(
+        "--round-survive-bonus",
+        type=float,
+        default=0.0,
+        help="E8 delta: reward delta per chamber reload the agent is alive for. "
+             "Sparse signal (typical ep has 1-3 reloads), encourages reaching "
+             "new rounds rather than dying in the current chamber.",
+    )
     a = p.parse_args()
     cfg = PPOConfig(
         total_timesteps=a.total_timesteps,
@@ -391,6 +442,9 @@ def parse_args() -> PPOConfig:
         hp_shaping=a.hp_shaping,
         low_hp_prob=a.low_hp_prob,
         gamma=a.gamma,
+        damage_bonus=a.damage_bonus,
+        heal_bonus=a.heal_bonus,
+        round_survive_bonus=a.round_survive_bonus,
     )
     if a.run_name:
         cfg.run_name = a.run_name
