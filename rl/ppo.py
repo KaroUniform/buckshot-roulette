@@ -67,6 +67,26 @@ class PPOConfig:
         return self.batch_size // self.num_minibatches
 
 
+def record_terminal_returns(
+    buffer: list, done: np.ndarray, reward: np.ndarray, max_size: int = 200
+) -> int:
+    """Append terminal-step rewards for each env that ended this step.
+
+    Pure helper so the metric-collection invariant ("each completed episode
+    contributes exactly once") can be unit-tested in isolation. The earlier
+    PPO loop also walked `infos["final_info"]`, which double-counted because
+    SyncVectorEnv populates it in lockstep with `done`.
+    """
+    n = 0
+    for env_id in range(len(done)):
+        if done[env_id]:
+            buffer.append(float(reward[env_id]))
+            n += 1
+            if len(buffer) > max_size:
+                buffer.pop(0)
+    return n
+
+
 def make_env_fn(pool: OpponentPool, seed: int):
     def thunk():
         env = SingleAgentBuckshotEnv(opponent_pool=pool)
@@ -114,7 +134,7 @@ def train(cfg: PPOConfig) -> ActorCritic:
     num_updates = cfg.total_timesteps // cfg.batch_size
     global_step = 0
     ep_returns_window: list[float] = []
-    ep_lengths_window: list[int] = []
+    n_terminations_total = 0  # for logging + regression-test on duplicate counting
     log_path = os.path.join(run_dir, "metrics.jsonl")
     log_file = open(log_path, "w")
 
@@ -147,30 +167,10 @@ def train(cfg: PPOConfig) -> ActorCritic:
             next_obs = torch.from_numpy(obs_dict["observation"]).to(device)
             next_mask = torch.from_numpy(obs_dict["action_mask"]).to(device)
 
-            # Track episodic stats from the autoreset metadata gymnasium provides
-            if "final_info" in infos:
-                for env_id, fi in enumerate(infos["final_info"]):
-                    if fi is None:
-                        continue
-                    if "episode" in fi:
-                        ep_returns_window.append(float(fi["episode"]["r"]))
-                        ep_lengths_window.append(int(fi["episode"]["l"]))
-                        if len(ep_returns_window) > 200:
-                            ep_returns_window.pop(0)
-                            ep_lengths_window.pop(0)
-                    else:
-                        # SingleAgentBuckshotEnv returns reward at terminal step;
-                        # synthesize episode return from last reward (±1 zero-sum)
-                        ep_returns_window.append(float(reward[env_id]))
-                        if len(ep_returns_window) > 200:
-                            ep_returns_window.pop(0)
-
-            # gymnasium 1.x stores per-env terminal info differently; cover that too
-            for env_id in range(cfg.num_envs):
-                if done[env_id]:
-                    ep_returns_window.append(float(reward[env_id]))
-                    if len(ep_returns_window) > 200:
-                        ep_returns_window.pop(0)
+            # Episodic return = the terminal step's reward (±1 zero-sum).
+            n_terminations_total += record_terminal_returns(
+                ep_returns_window, done, reward
+            )
 
         # ---- GAE ----
         with torch.no_grad():
@@ -264,6 +264,7 @@ def train(cfg: PPOConfig) -> ActorCritic:
             "approx_kl": float(approx_kl_avg),
             "clipfrac": float(np.mean(clipfracs)) if clipfracs else 0.0,
             "rollout/mean_return_50": recent_return,
+            "rollout/n_terminations_total": n_terminations_total,
             "pool_size": len(pool),
         }
 
