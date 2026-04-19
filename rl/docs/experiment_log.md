@@ -247,3 +247,57 @@ the (small) incentive to preserve HP is present. This targets the
 exploration gap directly rather than trying to increase the shaping
 signal until it dominates correct play.
 
+---
+
+## E6 — low-HP curriculum + α=0.05 shaping
+
+| | |
+|---|---|
+| Date | 2026-04-20 |
+| Run dir | `rl_runs/E6_low_hp_curriculum/` |
+| Hypothesis | α=0.05 HP shaping *plus* `low_hp_prob=0.3` curriculum (agent's HP clamped to 1 in 30% of resets) would give the agent enough experience in defensive-item states to learn BEER/INVERTER usage. |
+| Setup | 3M steps; same hyperparams as E5; `low_hp_prob=0.3`, `hp_shaping=0.05`; 4 league champions in opponent pool. ~16 min on 1× H100. |
+| Result | Mean WR vs 12-agent league = **0.495** (slightly *below* E5's 0.517 and champion's 0.531). Training converged normally. |
+
+### Behavioral probe: E6 vs E5 vs champion
+
+| Scenario | Champion | E5 | E6 | Notes |
+|---|---|---|---|---|
+| `beer_when_certain_death_next_shot` | SHOOT_OPPONENT 1.00 | SHOOT_OPPONENT 1.00 | SHOOT_OPPONENT 1.00 | same failure |
+| `inverter_save_from_known_live` | SHOOT_OPPONENT 1.00 | SHOOT_OPPONENT 1.00 | SHOOT_OPPONENT 1.00 | same failure |
+| `handsaw_lethal` | correct (0.97) | correct | correct (0.72) | *offensive combo degraded* |
+| `glass_when_uncertain` | correct (1.00) | correct | correct (0.64) | *info-gather weakened* |
+
+Survival failures **identical**. Two previously-strong offensive/info
+scenarios got noisier. Curriculum + shaping together made the overall
+policy slightly *worse*.
+
+### Interpretation
+
+The curriculum *did* produce experience in 1HP states — the agent now
+sees them on ~30% of resets vs. <1% natively — but the policy still
+shoots. Why:
+
+The HP-shaping term α=0.05 accumulates across a 15-20 step episode.
+Worst-case |Δhp| per step = 2 (lethal shot under damage_mult=2), typical
+magnitudes ≈ 1. Over an episode the shaped return can reach ±0.75 to
+±1.5 — comparable to or larger than the terminal ±1.0 that actually
+encodes "won / lost". So the terminal signal no longer *dominates*:
+winning by dealing cumulative damage along the way yields nearly the
+same reward as winning by surviving. The agent optimizes shaped
+cumulative reward and never receives a clear gradient that "losing
+because you didn't BEER" is worse than "losing while still aggressive".
+
+That matches the degraded probes: shaping pulled the agent toward
+higher average Δhp-per-step, which rewards myopic aggression at the
+expense of combos (handsaw sequence) and info plays (glass, whose
+"reward" is not Δhp at all).
+
+### Next step → E7
+
+**Remove shaping entirely** (α=0), keep curriculum, raise γ from 0.995
+to 0.999 for longer-horizon credit assignment so the terminal ±1 can
+propagate to early-episode decisions. This is the cleanest test of
+whether the curriculum alone, with a purely sparse terminal signal, is
+enough to teach survival.
+
