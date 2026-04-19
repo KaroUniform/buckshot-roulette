@@ -18,6 +18,7 @@ import os
 import re
 import sys
 from collections import defaultdict
+from typing import Optional
 
 import numpy as np
 import torch
@@ -73,21 +74,26 @@ def play_match(a, b, n_episodes: int, seed: int, device: str) -> float:
 
 
 def round_robin(ckpts_dir: str, episodes: int, seed: int, device: str,
-                max_ckpts: int = 8) -> dict:
-    paths = sorted(glob.glob(os.path.join(ckpts_dir, "snapshot_*.pt")), key=_ckpt_step)
-    if not paths:
-        raise FileNotFoundError(f"No snapshots found under {ckpts_dir}")
-    # If too many, sub-sample evenly so runtime is bounded
-    if len(paths) > max_ckpts:
-        idxs = np.linspace(0, len(paths) - 1, max_ckpts).astype(int)
-        paths = [paths[i] for i in idxs]
-    # Also add policy_final.pt if present
-    parent = os.path.dirname(ckpts_dir)
-    final_path = os.path.join(parent, "policy_final.pt")
-    if os.path.exists(final_path):
-        paths.append(final_path)
-
-    names = [os.path.basename(p).replace(".pt", "") for p in paths]
+                max_ckpts: int = 8,
+                explicit_paths: Optional[list[str]] = None,
+                explicit_names: Optional[list[str]] = None) -> dict:
+    if explicit_paths:
+        paths = list(explicit_paths)
+        names = list(explicit_names or [os.path.basename(os.path.dirname(p)) or os.path.basename(p) for p in paths])
+    else:
+        paths = sorted(glob.glob(os.path.join(ckpts_dir, "snapshot_*.pt")), key=_ckpt_step)
+        if not paths:
+            raise FileNotFoundError(f"No snapshots found under {ckpts_dir}")
+        # If too many, sub-sample evenly so runtime is bounded
+        if len(paths) > max_ckpts:
+            idxs = np.linspace(0, len(paths) - 1, max_ckpts).astype(int)
+            paths = [paths[i] for i in idxs]
+        # Also add policy_final.pt if present
+        parent = os.path.dirname(ckpts_dir)
+        final_path = os.path.join(parent, "policy_final.pt")
+        if os.path.exists(final_path):
+            paths.append(final_path)
+        names = [os.path.basename(p).replace(".pt", "") for p in paths]
     print(f"[round_robin] {len(paths)} checkpoints × {len(paths)-1} opponents × {episodes} eps")
     policies = [_load_checkpoint(p, device=device) for p in paths]
 
@@ -142,7 +148,10 @@ def round_robin(ckpts_dir: str, episodes: int, seed: int, device: str,
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("ckpts_dir", help="Directory containing snapshot_*.pt files")
+    p.add_argument("ckpts_dir", nargs="?", default=None,
+                   help="Directory containing snapshot_*.pt files (alternative: --sweep-dir)")
+    p.add_argument("--sweep-dir", default=None,
+                   help="Sweep directory; auto-collects sweep_*/policy_final.pt from all subdirs")
     p.add_argument("--episodes", type=int, default=500)
     p.add_argument("--seed", type=int, default=2026)
     p.add_argument("--device", default="cpu")
@@ -150,9 +159,26 @@ def main() -> int:
     p.add_argument("--out", default=None)
     a = p.parse_args()
 
-    result = round_robin(a.ckpts_dir, a.episodes, a.seed, a.device, max_ckpts=a.max_ckpts)
+    if a.sweep_dir:
+        sweep_paths = sorted(glob.glob(os.path.join(a.sweep_dir, "sweep_*/policy_final.pt")))
+        if not sweep_paths:
+            print(f"ERROR: no sweep_*/policy_final.pt under {a.sweep_dir}")
+            return 1
+        sweep_names = [os.path.basename(os.path.dirname(p)).replace("sweep_", "") for p in sweep_paths]
+        result = round_robin(
+            a.sweep_dir, a.episodes, a.seed, a.device,
+            max_ckpts=a.max_ckpts,
+            explicit_paths=sweep_paths,
+            explicit_names=sweep_names,
+        )
+        out = a.out or os.path.join(a.sweep_dir, "round_robin.json")
+    else:
+        if not a.ckpts_dir:
+            print("ERROR: must pass ckpts_dir or --sweep-dir")
+            return 1
+        result = round_robin(a.ckpts_dir, a.episodes, a.seed, a.device, max_ckpts=a.max_ckpts)
+        out = a.out or os.path.join(os.path.dirname(a.ckpts_dir) or ".", "round_robin.json")
 
-    out = a.out or os.path.join(os.path.dirname(a.ckpts_dir) or ".", "round_robin.json")
     with open(out, "w") as f:
         json.dump(result, f, indent=2)
     print(f"\nsaved: {out}")
