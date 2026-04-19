@@ -218,7 +218,9 @@ def test_adrenaline_two_step():
     _assert(opp.inventory[int(Item.HANDSAW)] == 0, "Stolen item must be removed from opp")
     _assert(e.state.damage_mult == 2, "Stolen handsaw must apply x2 to current player's next shot")
     _assert(not e.state.adrenaline_active, "Adrenaline must clear after pick")
-    _assert(e.state.non_adrenaline_used_this_turn, "Pick must count as non-adrenaline use")
+    # Note: the "one non-adrenaline item per turn" flag used to be asserted
+    # here, but we now allow chaining items freely within a turn to match
+    # the real game, so no such flag exists.
     print("ok  adrenaline_two_step")
 
 

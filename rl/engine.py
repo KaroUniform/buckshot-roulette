@@ -4,14 +4,17 @@ Heads-up (1v1) variant covering all 9 official Story / Double-or-Nothing items.
 Deterministic given a seed; no I/O; cheap to clone. Designed to be wrapped
 in PettingZoo / OpenSpiel envs without further refactoring.
 
-**Rules variant note:** this engine mirrors the user's existing Telegram-bot
-implementation under app/core/, which enforces "at most one non-adrenaline
-item per turn" (plus an adrenaline trigger that can pick ONE opponent item
-for the same turn). The actual Steam game is more permissive — there, a
-player can chain multiple items on one turn (e.g., Glass → Handsaw → shoot
-or Glass → Handcuff → shoot). We intentionally match the existing bot's
-rules so training transfers back to that environment; the `legal_actions`
-mask reflects THIS variant, not the original Steam rules.
+**Rules variant note:** this engine now matches the actual Steam game's
+item-usage rule: a player can use any number of items (of different types
+or the same type, limited only by inventory) on a single turn before
+shooting. Adrenaline can be triggered multiple times to steal multiple
+items. The `legal_actions` mask only blocks *illegal* actions — missing
+item, target state constraints (e.g., can't cuff an already-cuffed
+opponent), or shotgun-state constraints (e.g., can't use Beer on an empty
+shotgun). An earlier version of this engine mirrored the user's original
+Telegram bot's stricter "one non-adrenaline item per turn" rule; that
+restriction was removed because it collapsed the strategic state space
+and caused PPO self-play to plateau quickly at a shallow local optimum.
 
 Action space (discrete, 19 actions):
     0  SHOOT_OPPONENT
@@ -254,18 +257,15 @@ class BuckshotEngine:
             mask[int(Action.SHOOT_OPPONENT)] = True
             mask[int(Action.SHOOT_SELF)] = True
 
-        # Item uses
-        if not s.non_adrenaline_used_this_turn:
-            for item in _NON_ADRENALINE_ITEMS:
-                if me.inventory[int(item)] > 0 and self._item_usable(item, target=opp):
-                    mask[int(_USE_ACTION_FOR_ITEM[item])] = True
+        # Item uses — any number of items per turn, blocked only by per-item
+        # legality (empty shotgun, full HP for smoke, already-cuffed target).
+        for item in _NON_ADRENALINE_ITEMS:
+            if me.inventory[int(item)] > 0 and self._item_usable(item, target=opp):
+                mask[int(_USE_ACTION_FOR_ITEM[item])] = True
 
-        # Adrenaline can only be triggered if not already in pick mode and opponent
-        # has at least one stealable+usable item.
-        if (
-            me.inventory[int(Item.ADRENALINE)] > 0
-            and not s.non_adrenaline_used_this_turn
-        ):
+        # Adrenaline: legal whenever we have one, we're not already mid-pick,
+        # and the opponent has at least one stealable+usable item.
+        if me.inventory[int(Item.ADRENALINE)] > 0:
             opp_has_stealable = any(
                 opp.inventory[int(it)] > 0 and self._item_usable(it, target=opp)
                 for it in _NON_ADRENALINE_ITEMS
@@ -420,7 +420,8 @@ class BuckshotEngine:
 
     def _advance_turn(self, keep: bool) -> None:
         s = self.state
-        s.non_adrenaline_used_this_turn = False
+        # Items-per-turn is unlimited, so nothing to clear there. Adrenaline
+        # should never leak across a turn change (fresh turn, no pending pick).
         s.adrenaline_active = False
         if keep:
             return
@@ -484,7 +485,7 @@ class BuckshotEngine:
                     return
         elif item == Item.ADRENALINE:
             s.adrenaline_active = True
-            return  # do not flip non_adrenaline_used; do not end turn
+            return  # do not end turn; caller will pick an opp item next
         elif item == Item.INVERTER:
             # Flip the next shell only (matches wiki: "swaps the polarity of the
             # current shell in the chamber").
@@ -494,8 +495,9 @@ class BuckshotEngine:
                 if 0 in s.known_shells[k]:
                     s.known_shells[k][0] = not s.known_shells[k][0]
 
-        # Mark non-adrenaline use; clear adrenaline_active (a pick consumes it)
-        s.non_adrenaline_used_this_turn = True
+        # A pick action consumes adrenaline; regular item uses don't touch it.
+        # We intentionally DO NOT flip a "used non-adrenaline item" flag any
+        # more — items can chain freely within a turn.
         s.adrenaline_active = False
 
 
