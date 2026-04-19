@@ -296,6 +296,11 @@ def train(cfg: PPOConfig) -> ActorCritic:
 
     finally:
         log_file.close()
+        try:
+            envs.close()
+        except Exception:
+            # Never let teardown raise over the primary exception
+            pass
     ckpt = os.path.join(run_dir, "policy_final.pt")
     torch.save(policy.state_dict(), ckpt)
     print(f"saved final policy to {ckpt}")

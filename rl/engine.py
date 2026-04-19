@@ -192,6 +192,10 @@ class BuckshotEngine:
 
         info: dict = {}
         action = Action(action)
+        # Capture the actor BEFORE stepping. After the step, current_player
+        # may have shifted (e.g., turn passed on a live shot) so using it for
+        # reward signing would silently flip meaning.
+        actor = self.state.current_player
 
         if action == Action.SHOOT_OPPONENT:
             self._shoot(target=1 - self.state.current_player, info=info)
@@ -206,11 +210,14 @@ class BuckshotEngine:
             item = _ITEM_FOR_PICK_ACTION[action]
             self._apply_item(item, from_opponent_inventory=True, info=info)
 
+        # Reward is zero on non-terminal steps; on termination, +1/-1 from
+        # the ACTOR's (not current_player's) perspective. Wrappers that track
+        # per-agent rewards (env.py, single_agent_env.py) compute their own
+        # from state.winner directly, but any direct caller relying on this
+        # return value now gets consistent semantics.
         reward = 0.0
         if self.state.done:
-            reward = 1.0 if self.state.winner == self.state.current_player else -1.0
-            # Note: reward sign is from current player's perspective at the moment
-            # of termination. PettingZoo wrapper will translate per-agent.
+            reward = 1.0 if self.state.winner == actor else -1.0
 
         return self.state, reward, self.state.done, info
 

@@ -127,15 +127,19 @@ def round_robin(ckpts_dir: str, episodes: int, seed: int, device: str,
     for rank, i in enumerate(ranking):
         print(f"{rank+1:>2}. {names[i]:<25} mean_wr={scores[i]:.3f}")
 
-    # Cycle detection: for any triple (a, b, c), check if a>b, b>c, c>a
+    # Cycle detection over UNORDERED triples so each rock-paper-scissors
+    # pattern is counted once. For {a,b,c}, only one rotation at most
+    # satisfies a→b→c→a given pairwise win rates, so we fix i<j<k and try
+    # both orientations (i→j→k→i or i→k→j→i).
     cycles: list[tuple[str, str, str]] = []
-    for i in range(len(policies)):
-        for j in range(len(policies)):
-            for k in range(len(policies)):
-                if len({i, j, k}) < 3:
-                    continue
+    n = len(policies)
+    for i in range(n):
+        for j in range(i + 1, n):
+            for k in range(j + 1, n):
                 if (wins[(i, j)] > 0.55 and wins[(j, k)] > 0.55 and wins[(k, i)] > 0.55):
                     cycles.append((names[i], names[j], names[k]))
+                elif (wins[(i, k)] > 0.55 and wins[(k, j)] > 0.55 and wins[(j, i)] > 0.55):
+                    cycles.append((names[i], names[k], names[j]))
     if cycles:
         print(f"\n[!] Detected {len(cycles)} rock-paper-scissors triples (threshold 0.55). First 3:")
         for c in cycles[:3]:
