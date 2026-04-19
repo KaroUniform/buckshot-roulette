@@ -245,7 +245,11 @@ def train(cfg: PPOConfig) -> ActorCritic:
                 p.requires_grad_(False)
             snap_name = f"snapshot_u{update}"
             pool.add(snap_name, make_frozen_policy_opponent(snap, device=cfg.device), weight=1.0)
-            # Trim oldest snapshots beyond cap
+            # Persist to disk so we can analyse training trajectory later.
+            ckpts_dir = os.path.join(run_dir, "checkpoints")
+            os.makedirs(ckpts_dir, exist_ok=True)
+            torch.save(snap.state_dict(), os.path.join(ckpts_dir, f"{snap_name}.pt"))
+            # Trim oldest snapshots beyond cap (in pool only — keep all on disk)
             snap_names = [n for n in pool.opponents if n.startswith("snapshot_")]
             while len(snap_names) > cfg.max_pool_snapshots:
                 drop = snap_names.pop(0)
