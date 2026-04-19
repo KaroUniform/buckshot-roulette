@@ -126,7 +126,6 @@ class GameState:
     shells: list  # ordered; shells[0] is the NEXT to be fired
     damage_mult: int  # applied to next shot, reset to 1 after firing
     current_player: int  # 0 or 1
-    non_adrenaline_used_this_turn: bool
     adrenaline_active: bool  # current_player has used adrenaline and must pick
     # Per-player knowledge: maps shell-index (0 = next) to True/False (live/blank)
     known_shells: list  # [dict, dict]
@@ -165,7 +164,6 @@ class BuckshotEngine:
             shells=[],
             damage_mult=1,
             current_player=int(self.rng.integers(0, 2)),
-            non_adrenaline_used_this_turn=False,
             adrenaline_active=False,
             known_shells=[{}, {}],
         )
@@ -237,8 +235,8 @@ class BuckshotEngine:
         if s.adrenaline_active:
             # Only pick actions, restricted to items the opponent actually has
             # AND items that respect the "1 non-adrenaline per turn" rule.
-            # The trigger USE_ADRENALINE itself sets non_adrenaline_used to False,
-            # so picking is always allowed by that rule (we check inventory only).
+            # Any PICK_<item> is always allowed by per-turn quota (we check
+            # inventory and per-item usability only — no 1-item limit now).
             for item in _NON_ADRENALINE_ITEMS:
                 if opp.inventory[int(item)] > 0 and self._item_usable(item, target=opp):
                     mask[int(_PICK_ACTION_FOR_ITEM[item])] = True
@@ -337,7 +335,12 @@ class BuckshotEngine:
                     int(opp.skip_next_turn),
                     int(me.skip_next_turn),
                     int(s.adrenaline_active),
-                    int(s.non_adrenaline_used_this_turn),
+                    # Reserved slot — used to hold the
+                    # `non_adrenaline_used_this_turn` flag before C1 removed
+                    # the 1-item-per-turn rule. Kept at constant 0 so the
+                    # 47-dim observation layout stays compatible with
+                    # pre-C1 trained checkpoints (sweep winners, phase3).
+                    0.0,
                 ],
                 dtype=np.float32,
             ),
