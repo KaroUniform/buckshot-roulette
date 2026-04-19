@@ -172,12 +172,12 @@ class SimpleBuckshotState(pyspiel.State):
     # info state, which is what we want.
 
     def information_state_string(self, player: int = 0) -> str:
-        # In this simplified, no-items game ALL info is public except the
-        # exact shell order (which neither player sees). The info state is
-        # therefore the same for both players. We still take a `player`
-        # argument to satisfy the API but ignore it — encoding it would
-        # double the table size and break TabularPolicy lookups since
-        # OpenSpiel keys policy entries by the acting player only.
+        # This simplified game is fully public except shell order, so
+        # both players observe the same info state. The `player` arg is
+        # ignored intentionally — OpenSpiel's `exploitability`/best-
+        # response code asks for info_state from both players' views at
+        # every state, and a public game must return the same string
+        # for each view. See also `_state_tensor` which mirrors this.
         del player
         if self.is_chance_node():
             return f"chance:hps={self._hps},to_deal={self._n_live_total + self._n_blank_total}"
@@ -193,21 +193,26 @@ class SimpleBuckshotState(pyspiel.State):
         return self.information_state_string(player)
 
     # Tensor encodings — flat vectors. Shape is identical for all states.
+    # Absolute (public) encoding to match `information_state_string`: the
+    # game is fully public (only shell order is hidden), so tensor and
+    # string must be player-independent. Per-player views are recovered
+    # by algos like deep CFR by concatenating `player` as a separate
+    # feature at the network input, not by flipping positions here.
     def _state_tensor(self, player: int) -> np.ndarray:
-        # [hp_me, hp_opp, hp_max, n_shells, n_live_remain, n_blank_remain, my_turn]
+        # [hp_p0, hp_p1, hp_max, n_shells, n_live_remain, n_blank_remain, cur_player]
+        del player
         n = len(self._shells)
         n_live = sum(1 for x in self._shells if x)
         n_blank = n - n_live
-        my_turn = 1.0 if self._cur_player == player else 0.0
         return np.array(
             [
-                self._hps[player],
-                self._hps[1 - player],
+                self._hps[0],
+                self._hps[1],
                 self._hp_max,
                 n,
                 n_live,
                 n_blank,
-                my_turn,
+                float(self._cur_player),
             ],
             dtype=np.float32,
         )

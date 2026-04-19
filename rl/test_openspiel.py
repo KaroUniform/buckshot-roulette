@@ -113,6 +113,27 @@ def test_blank_self_shot_on_last_shell_preserved_across_reload():
     print("ok  blank_self_shot_on_last_shell_preserved_across_reload")
 
 
+def test_info_state_string_and_tensor_are_consistent():
+    """Regression: bug-bot flagged that info-state STRING used absolute
+    encoding [p0, p1] while info-state TENSOR used player-relative
+    [me, opp]. A fully-public game like this one requires BOTH to be
+    player-independent (OpenSpiel's exploitability queries info_state
+    from both players' views). Verify both string and tensor ignore
+    the `player` arg."""
+    g = pyspiel.load_game("simple_buckshot")
+    s = g.new_initial_state()
+    s.apply_action(s.legal_actions()[0])  # resolve initial chance
+    s0_str = s.information_state_string(0)
+    s1_str = s.information_state_string(1)
+    s0_tensor = s.information_state_tensor(0)
+    s1_tensor = s.information_state_tensor(1)
+    _assert(s0_str == s1_str,
+            f"string must be player-independent: {s0_str!r} vs {s1_str!r}")
+    _assert(s0_tensor == s1_tensor,
+            f"tensor must be player-independent: {s0_tensor} vs {s1_tensor}")
+    print("ok  info_state_string_and_tensor_are_consistent")
+
+
 def test_cfr_converges_quickly():
     """Sanity check: CFR+ on the default game should drive nash_conv well
     below 0.01 within 100 iterations. If this regresses, CFR isn't
@@ -135,6 +156,7 @@ def main() -> int:
         test_random_episode_terminates_with_zero_sum,
         test_clone_preserves_state,
         test_blank_self_shot_on_last_shell_preserved_across_reload,
+        test_info_state_string_and_tensor_are_consistent,
         test_cfr_converges_quickly,
     ]
     failures = 0
