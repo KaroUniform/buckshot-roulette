@@ -130,27 +130,43 @@ class OpponentPool:
 
     Holds a set of named opponents (functions). `sample()` returns one
     according to weights — used by the env at reset time to pick who the
-    agent plays this episode. Snapshots of the training policy can be added
-    via `add_snapshot(name, opponent_fn)`.
+    agent plays this episode.
+
+    Thread-safety: all reads/writes on the pool are serialised through an
+    internal `threading.Lock`. Today we only use SyncVectorEnv (synchronous,
+    GIL-serialised), so correctness doesn't depend on the lock; it's there
+    so that switching to AsyncVectorEnv (or sharing a pool across worker
+    threads) doesn't introduce a data race between `add`/`remove` and
+    `sample`.
     """
 
     def __init__(self, base_opponents: Optional[dict[str, OpponentFn]] = None) -> None:
+        import threading
         self.opponents: dict[str, OpponentFn] = dict(base_opponents or {})
         self.weights: dict[str, float] = {name: 1.0 for name in self.opponents}
+        self._lock = threading.Lock()
 
     def add(self, name: str, fn: OpponentFn, weight: float = 1.0) -> None:
-        self.opponents[name] = fn
-        self.weights[name] = weight
+        with self._lock:
+            self.opponents[name] = fn
+            self.weights[name] = weight
+
+    def remove(self, name: str) -> None:
+        with self._lock:
+            self.opponents.pop(name, None)
+            self.weights.pop(name, None)
 
     def sample(self, rng: np.random.Generator) -> tuple[str, OpponentFn]:
-        names = list(self.opponents.keys())
-        if not names:
-            raise ValueError("OpponentPool is empty")
-        ws = np.array([self.weights[n] for n in names], dtype=np.float64)
+        with self._lock:
+            names = list(self.opponents.keys())
+            if not names:
+                raise ValueError("OpponentPool is empty")
+            ws = np.array([self.weights[n] for n in names], dtype=np.float64)
+            fns = [self.opponents[n] for n in names]
         ws /= ws.sum()
         idx = int(rng.choice(len(names), p=ws))
-        name = names[idx]
-        return name, self.opponents[name]
+        return names[idx], fns[idx]
 
     def __len__(self) -> int:
-        return len(self.opponents)
+        with self._lock:
+            return len(self.opponents)

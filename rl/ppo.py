@@ -257,12 +257,11 @@ def train(cfg: PPOConfig) -> ActorCritic:
                 ckpts_dir = os.path.join(run_dir, "checkpoints")
                 os.makedirs(ckpts_dir, exist_ok=True)
                 torch.save(snap.state_dict(), os.path.join(ckpts_dir, f"{snap_name}.pt"))
-                # Trim oldest snapshots beyond cap (in pool only — keep all on disk)
+                # Trim oldest snapshots beyond cap (in pool only — keep all on disk).
+                # Go through pool.remove() so mutations take the internal lock.
                 snap_names = [n for n in pool.opponents if n.startswith("snapshot_")]
                 while len(snap_names) > cfg.max_pool_snapshots:
-                    drop = snap_names.pop(0)
-                    del pool.opponents[drop]
-                    del pool.weights[drop]
+                    pool.remove(snap_names.pop(0))
 
             # ---- Logging + eval ----
             recent_return = float(np.mean(ep_returns_window[-50:])) if ep_returns_window else 0.0
