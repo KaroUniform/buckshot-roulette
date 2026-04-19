@@ -35,9 +35,12 @@ class BuckshotAECEnv(AECEnv):
         super().__init__()
         self.render_mode = render_mode
         self.engine = BuckshotEngine()
-        # Compute observation length from a probe reset
-        self.engine.reset(seed=0)
-        obs_len = self.engine.observation(0).shape[0]
+        # Probe observation length on a throwaway engine so we don't pin the
+        # real engine's RNG to a fixed seed (which would make every env
+        # without an explicit reset(seed=...) produce identical games).
+        _probe = BuckshotEngine()
+        _probe.reset(seed=0)
+        obs_len = _probe.observation(0).shape[0]
         self._obs_low = np.full(obs_len, -np.inf, dtype=np.float32)
         self._obs_high = np.full(obs_len, np.inf, dtype=np.float32)
 

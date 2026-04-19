@@ -40,8 +40,12 @@ class SingleAgentBuckshotEnv(gym.Env):
     ) -> None:
         super().__init__()
         self.engine = BuckshotEngine()
-        self.engine.reset(seed=0)
-        obs_len = self.engine.observation(0).shape[0]
+        # Probe observation length on a throwaway engine so the real engine's
+        # RNG isn't pinned to seed=0 (which would make seedless reset()s
+        # repeat the same game forever across env instances).
+        _probe = BuckshotEngine()
+        _probe.reset(seed=0)
+        obs_len = _probe.observation(0).shape[0]
 
         self.observation_space = spaces.Dict(
             {

@@ -243,6 +243,38 @@ def test_random_vs_random_terminates():
     )
 
 
+def test_clone_preserves_rng_stream():
+    """clone() must yield an engine that produces the EXACT same future
+    sequence as the original — verifies we're deep-copying the Generator
+    rather than re-seeding from a partial state."""
+    e1 = BuckshotEngine(seed=99)
+    e1.reset()
+    # Burn some randomness so the engine RNG state is mid-stream
+    rng_local = np.random.default_rng(0)
+    for _ in range(5):
+        if e1.state.done:
+            break
+        legal = np.where(e1.legal_actions())[0]
+        e1.step(int(rng_local.choice(legal)))
+    e2 = e1.clone()
+    # Now play out both with identical action choices and compare every step.
+    rng_local = np.random.default_rng(7)
+    for _ in range(50):
+        if e1.state.done or e2.state.done:
+            break
+        legal = np.where(e1.legal_actions())[0]
+        a = int(rng_local.choice(legal))
+        e1.step(a)
+        e2.step(a)
+        _assert(e1.state.shells == e2.state.shells, "Shells diverged after clone")
+        _assert(
+            e1.state.players[0].hp == e2.state.players[0].hp
+            and e1.state.players[1].hp == e2.state.players[1].hp,
+            "HPs diverged after clone",
+        )
+    print("ok  clone_preserves_rng_stream")
+
+
 def test_obs_size_matches_documented_layout():
     e = BuckshotEngine(seed=0)
     e.reset()
@@ -268,6 +300,7 @@ def main() -> int:
         test_adrenaline_two_step,
         test_pills_can_kill_and_end_game,
         test_random_vs_random_terminates,
+        test_clone_preserves_rng_stream,
         test_obs_size_matches_documented_layout,
     ]
     failures = 0

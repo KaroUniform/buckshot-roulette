@@ -166,7 +166,10 @@ class BuckshotEngine:
         new.hp_range = self.hp_range
         new.shells_range = self.shells_range
         new.items_per_round_choices = self.items_per_round_choices
-        new.rng = np.random.default_rng(self.rng.bit_generator.state["state"]["state"])
+        # Deep-copy the entire Generator (including PCG64's `inc` field).
+        # Re-seeding from `bit_generator.state["state"]["state"]` would route
+        # the value through SeedSequence and produce a different stream.
+        new.rng = copy.deepcopy(self.rng)
         new.state = copy.deepcopy(self.state)
         return new
 

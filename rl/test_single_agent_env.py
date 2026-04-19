@@ -22,6 +22,27 @@ def _assert(cond, msg):
         raise AssertionError(msg)
 
 
+def test_two_envs_without_seed_diverge():
+    """Two fresh envs with no explicit seed must NOT produce identical games.
+    Same regression guard as the AEC env."""
+    games = []
+    for _ in range(2):
+        env = SingleAgentBuckshotEnv(opponent_pool=OpponentPool({"random": random_opponent}))
+        env.reset()
+        s = env.engine.state
+        games.append(
+            (
+                tuple(s.shells),
+                s.current_player,
+                tuple(s.players[0].inventory.tolist()),
+                tuple(s.players[1].inventory.tolist()),
+                s.players[0].hp,
+            )
+        )
+    _assert(games[0] != games[1], f"Two no-seed envs produced identical games: {games[0]}")
+    print("ok  two_envs_without_seed_diverge")
+
+
 def test_obs_and_action_spaces_present():
     env = SingleAgentBuckshotEnv()
     obs, info = env.reset(seed=0)
@@ -135,6 +156,7 @@ def test_rule_based_opponents_never_pick_illegal_action():
 def main() -> int:
     tests = [
         test_obs_and_action_spaces_present,
+        test_two_envs_without_seed_diverge,
         test_reset_with_opponent_first_handles_terminal_or_proceeds,
         test_random_episode_terminates_with_valid_reward,
         test_opponent_pool_sampling_distribution,

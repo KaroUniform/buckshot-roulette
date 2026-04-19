@@ -62,6 +62,29 @@ def test_action_mask_is_only_set_for_current_agent():
     print("ok  action_mask_is_only_set_for_current_agent")
 
 
+def test_two_envs_without_seed_diverge():
+    """Two fresh envs with no explicit seed must NOT produce identical games.
+    Catches the regression where the __init__ probe pinned the engine RNG."""
+    games = []
+    for _ in range(2):
+        env = BuckshotAECEnv()
+        env.reset()  # no seed
+        # Snapshot the initial state — shells + starting player + items
+        s = env.engine.state
+        signature = (
+            tuple(s.shells),
+            s.current_player,
+            tuple(s.players[0].inventory.tolist()),
+            tuple(s.players[1].inventory.tolist()),
+            s.players[0].hp,
+        )
+        games.append(signature)
+    # With genuinely random seeding, two consecutive draws being identical
+    # would be astronomically unlikely. If they match, RNG is pinned.
+    _assert(games[0] != games[1], f"Two no-seed envs produced identical games: {games[0]}")
+    print("ok  two_envs_without_seed_diverge")
+
+
 def test_terminal_rewards_sum_to_zero():
     """Heads-up zero-sum: winner +1, loser -1, sum = 0 every game."""
     rng = np.random.default_rng(1)
@@ -87,6 +110,7 @@ def test_terminal_rewards_sum_to_zero():
 def main() -> int:
     tests = [
         test_action_mask_is_only_set_for_current_agent,
+        test_two_envs_without_seed_diverge,
         test_random_play_terminates_and_balances,
         test_terminal_rewards_sum_to_zero,
         test_pettingzoo_api_compliance,  # heaviest, run last
