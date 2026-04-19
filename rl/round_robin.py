@@ -156,6 +156,8 @@ def main() -> int:
                    help="Directory containing snapshot_*.pt files (alternative: --sweep-dir)")
     p.add_argument("--sweep-dir", default=None,
                    help="Sweep directory; auto-collects sweep_*/policy_final.pt from all subdirs")
+    p.add_argument("--league-dir", default=None,
+                   help="League sweep directory; auto-collects *_gen*/policy_final.pt (league_train.py format)")
     p.add_argument("--episodes", type=int, default=500)
     p.add_argument("--seed", type=int, default=2026)
     p.add_argument("--device", default="cpu")
@@ -163,7 +165,20 @@ def main() -> int:
     p.add_argument("--out", default=None)
     a = p.parse_args()
 
-    if a.sweep_dir:
+    if a.league_dir:
+        league_paths = sorted(glob.glob(os.path.join(a.league_dir, "*_gen*/policy_final.pt")))
+        if not league_paths:
+            print(f"ERROR: no *_gen*/policy_final.pt under {a.league_dir}")
+            return 1
+        league_names = [os.path.basename(os.path.dirname(p)) for p in league_paths]
+        result = round_robin(
+            a.league_dir, a.episodes, a.seed, a.device,
+            max_ckpts=a.max_ckpts,
+            explicit_paths=league_paths,
+            explicit_names=league_names,
+        )
+        out = a.out or os.path.join(a.league_dir, "round_robin.json")
+    elif a.sweep_dir:
         sweep_paths = sorted(glob.glob(os.path.join(a.sweep_dir, "sweep_*/policy_final.pt")))
         if not sweep_paths:
             print(f"ERROR: no sweep_*/policy_final.pt under {a.sweep_dir}")
@@ -178,7 +193,7 @@ def main() -> int:
         out = a.out or os.path.join(a.sweep_dir, "round_robin.json")
     else:
         if not a.ckpts_dir:
-            print("ERROR: must pass ckpts_dir or --sweep-dir")
+            print("ERROR: must pass ckpts_dir, --sweep-dir, or --league-dir")
             return 1
         result = round_robin(a.ckpts_dir, a.episodes, a.seed, a.device, max_ckpts=a.max_ckpts)
         out = a.out or os.path.join(os.path.dirname(a.ckpts_dir) or ".", "round_robin.json")

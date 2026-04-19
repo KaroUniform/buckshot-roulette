@@ -113,6 +113,202 @@ def _scenario_inverter_known_blank(e: BuckshotEngine) -> None:
     e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
 
 
+# --- Item-strategy deep dives ---
+
+def _scenario_saw_when_known_live(e: BuckshotEngine) -> None:
+    """Glass already revealed next shell is LIVE, opponent at 2 HP, agent
+    has Handsaw. Optimal: USE_HANDSAW (then shoot opponent for 2 dmg = kill)."""
+    e.state.shells = [True, False, True]
+    e.state.known_shells[e.state.current_player][0] = True
+    e.state.players[1 - e.state.current_player].hp = 2
+    inv = _empty_inventory()
+    inv[int(Item.HANDSAW)] = 1
+    e.state.players[e.state.current_player].inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_saw_when_known_blank(e: BuckshotEngine) -> None:
+    """Agent KNOWS next shell is blank. Saw on a blank is WASTED (damage
+    resets after a blank-shot anyway). Optimal: NOT USE_HANDSAW — just
+    shoot self for the free turn, or shoot opponent to burn the blank."""
+    e.state.shells = [False, True]
+    e.state.known_shells[e.state.current_player][0] = False
+    inv = _empty_inventory()
+    inv[int(Item.HANDSAW)] = 1
+    e.state.players[e.state.current_player].inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_smoke_useless_at_full_hp(e: BuckshotEngine) -> None:
+    """Agent at full HP with a Smoke. Smoke can't heal beyond max. Should
+    be masked as illegal — but if agent somehow considers it, should never
+    pick. Verify legal mask excludes SMOKE."""
+    me = e.state.players[e.state.current_player]
+    me.hp = me.max_hp
+    inv = _empty_inventory()
+    inv[int(Item.SMOKE)] = 1
+    me.inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+    e.state.shells = [True, False]
+
+
+def _scenario_beer_when_certain_death_next_shot(e: BuckshotEngine) -> None:
+    """Agent at 1 HP, next shell is known LIVE, has Beer. USE_BEER ejects
+    it and might save life. Optimal: USE_BEER."""
+    me = e.state.players[e.state.current_player]
+    me.hp = 1
+    e.state.shells = [True, False, True]
+    e.state.known_shells[e.state.current_player][0] = True
+    inv = _empty_inventory()
+    inv[int(Item.BEER)] = 1
+    me.inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_phone_when_many_shells(e: BuckshotEngine) -> None:
+    """Fresh round, 5-shell chamber, no items used yet, agent has Phone.
+    Phone reveals one random shell's identity. High information value.
+    Optimal: USE_PHONE before committing to a shot."""
+    e.state.shells = [True, False, True, False, True]
+    inv = _empty_inventory()
+    inv[int(Item.PHONE)] = 1
+    e.state.players[e.state.current_player].inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_adrenaline_steal_saw_for_kill(e: BuckshotEngine) -> None:
+    """Opponent at 2 HP, opp has Handsaw, I have Adrenaline + will shoot
+    opp with live next. Optimal: USE_ADRENALINE to steal their saw, then
+    USE the saw, then shoot for 2 dmg = kill."""
+    e.state.players[1 - e.state.current_player].hp = 2
+    e.state.shells = [True, False]
+    e.state.known_shells[e.state.current_player][0] = True
+    me_inv = _empty_inventory()
+    me_inv[int(Item.ADRENALINE)] = 1
+    opp_inv = _empty_inventory()
+    opp_inv[int(Item.HANDSAW)] = 1
+    e.state.players[e.state.current_player].inventory = me_inv
+    e.state.players[1 - e.state.current_player].inventory = opp_inv
+
+
+def _scenario_adrenaline_steal_smoke_when_low(e: BuckshotEngine) -> None:
+    """Agent at 1/4 HP, has Adrenaline but no Smoke; opp has Smoke.
+    Optimal: USE_ADRENALINE → PICK_SMOKE to heal yourself using their item."""
+    me = e.state.players[e.state.current_player]
+    me.hp = 1
+    me.max_hp = 4
+    e.state.shells = [True, False, True]
+    me_inv = _empty_inventory()
+    me_inv[int(Item.ADRENALINE)] = 1
+    opp_inv = _empty_inventory()
+    opp_inv[int(Item.SMOKE)] = 1
+    me.inventory = me_inv
+    e.state.players[1 - e.state.current_player].inventory = opp_inv
+
+
+def _scenario_pills_as_last_resort(e: BuckshotEngine) -> None:
+    """Agent at 1 HP, opp at 1 HP, next shell certain live (agent's turn).
+    Shooting opp wins. Shooting self kills. Pills is a 40% +2 HP gamble
+    (lives) vs 60% -1 HP (dies — but you're already facing a near-certain
+    kill anyway). Pills is NOT obviously optimal here since opp is 1 HP
+    and shooting them wins. Optimal: SHOOT_OPPONENT (live next → kill)."""
+    me = e.state.players[e.state.current_player]
+    me.hp = 1
+    e.state.players[1 - e.state.current_player].hp = 1
+    e.state.shells = [True, False]
+    e.state.known_shells[e.state.current_player][0] = True
+    inv = _empty_inventory()
+    inv[int(Item.PILLS)] = 1
+    me.inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_pills_desperate(e: BuckshotEngine) -> None:
+    """Agent at 1 HP, next shell known live, NO items except Pills, NO way
+    to eject. Shooting opp is impossible (shells not usable?) — actually
+    shooting opp still works, damages them for 1. But if opp is at HP=3
+    and you can't kill them, you might need the pills gamble for HP
+    buffer. Optimal here: SHOOT_OPPONENT (damages them, ends your turn)
+    is still likely better than pills (60% kill you immediately)."""
+    me = e.state.players[e.state.current_player]
+    me.hp = 1
+    e.state.players[1 - e.state.current_player].hp = 3
+    e.state.shells = [True, False]
+    e.state.known_shells[e.state.current_player][0] = True
+    inv = _empty_inventory()
+    inv[int(Item.PILLS)] = 1
+    me.inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_cuff_before_saw_combo(e: BuckshotEngine) -> None:
+    """Opp at 2 HP, next shell known LIVE, agent has Handcuff + Handsaw.
+    Optimal chain: USE_HANDCUFF (opp skips), then USE_HANDSAW, then
+    SHOOT_OPPONENT (2 dmg = kill). Cuff first so even if agent misses next
+    turn (though we know it's live), opp can't retaliate."""
+    e.state.players[1 - e.state.current_player].hp = 2
+    e.state.shells = [True, False]
+    e.state.known_shells[e.state.current_player][0] = True
+    inv = _empty_inventory()
+    inv[int(Item.HANDCUFF)] = 1
+    inv[int(Item.HANDSAW)] = 1
+    e.state.players[e.state.current_player].inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_inverter_flip_known_live_to_save_life(e: BuckshotEngine) -> None:
+    """Agent at 1 HP, next shell KNOWN LIVE, would normally die to opp's
+    next shot. Agent has Inverter. Optimal: USE_INVERTER (flip live→blank)
+    so the opp's/own next shot is now blank and you survive. Then kill or
+    delay as needed. This is a survival play that requires creative use."""
+    me = e.state.players[e.state.current_player]
+    me.hp = 1
+    e.state.shells = [True, False]
+    e.state.known_shells[e.state.current_player][0] = True
+    inv = _empty_inventory()
+    inv[int(Item.INVERTER)] = 1
+    me.inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_glass_then_act_all_live(e: BuckshotEngine) -> None:
+    """Fresh 3-shell chamber, all live (unseen by agent). Agent has Glass.
+    Optimal: USE_GLASS first — will reveal live, then agent knows any shot
+    is a live shot → SHOOT_OPPONENT is clearly correct."""
+    e.state.shells = [True, True, True]
+    inv = _empty_inventory()
+    inv[int(Item.GLASS)] = 1
+    e.state.players[e.state.current_player].inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_opp_cuffed_go_aggressive(e: BuckshotEngine) -> None:
+    """Opponent is already cuffed (skip_next_turn=True) → whatever I do,
+    opp doesn't act. Free offensive turn. Optimal: USE_HANDSAW (if available)
+    + SHOOT_OPPONENT. Known live. Opp at 2 HP."""
+    e.state.players[1 - e.state.current_player].skip_next_turn = True
+    e.state.players[1 - e.state.current_player].hp = 2
+    e.state.shells = [True, False]
+    e.state.known_shells[e.state.current_player][0] = True
+    inv = _empty_inventory()
+    inv[int(Item.HANDSAW)] = 1
+    e.state.players[e.state.current_player].inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
+def _scenario_useless_phone_after_glass(e: BuckshotEngine) -> None:
+    """Agent has Glass AND Phone. Agent also already knows position 0 via
+    prior Glass use (recorded in known_shells). Optimal: Phone to learn
+    MORE positions. Glass would be redundant on position 0."""
+    e.state.shells = [True, False, True, False]
+    e.state.known_shells[e.state.current_player][0] = True
+    inv = _empty_inventory()
+    inv[int(Item.GLASS)] = 1
+    inv[int(Item.PHONE)] = 1
+    e.state.players[e.state.current_player].inventory = inv
+    e.state.players[1 - e.state.current_player].inventory = _empty_inventory()
+
+
 SCENARIOS: list[Scenario] = [
     Scenario(
         "blank_majority_no_items",
@@ -161,6 +357,90 @@ SCENARIOS: list[Scenario] = [
         "Glass said next is BLANK; agent has Inverter.",
         _scenario_inverter_known_blank,
         "Invert the chamber to make it live, then shoot opponent.",
+    ),
+    Scenario(
+        "saw_when_known_live",
+        "Known LIVE next shell; opp at 2HP; agent has Saw.",
+        _scenario_saw_when_known_live,
+        "USE_HANDSAW → SHOOT_OPPONENT (guaranteed 2-dmg kill).",
+    ),
+    Scenario(
+        "saw_when_known_blank",
+        "Known BLANK next shell; agent has Saw.",
+        _scenario_saw_when_known_blank,
+        "NOT USE_HANDSAW (wasted on blank). Prefer SHOOT_SELF (free turn) or SHOOT_OPPONENT.",
+    ),
+    Scenario(
+        "smoke_useless_at_full_hp",
+        "Agent at full HP with Smoke (should be illegal).",
+        _scenario_smoke_useless_at_full_hp,
+        "SMOKE masked illegal; verify engine gating.",
+    ),
+    Scenario(
+        "beer_when_certain_death_next_shot",
+        "Agent 1HP, next shell known LIVE, has Beer.",
+        _scenario_beer_when_certain_death_next_shot,
+        "USE_BEER to eject the lethal shell and survive.",
+    ),
+    Scenario(
+        "phone_when_many_shells",
+        "Fresh 5-shell chamber, has Phone.",
+        _scenario_phone_when_many_shells,
+        "USE_PHONE for free information about a shell position.",
+    ),
+    Scenario(
+        "adrenaline_steal_saw_for_kill",
+        "Opp at 2HP with Saw; I have Adrenaline; next shell known live.",
+        _scenario_adrenaline_steal_saw_for_kill,
+        "USE_ADRENALINE → PICK_HANDSAW (→ SHOOT_OPPONENT for 2-dmg kill).",
+    ),
+    Scenario(
+        "adrenaline_steal_smoke_when_low",
+        "I'm 1/4 HP with Adrenaline; opp has Smoke.",
+        _scenario_adrenaline_steal_smoke_when_low,
+        "USE_ADRENALINE → PICK_SMOKE (heal using their item).",
+    ),
+    Scenario(
+        "pills_vs_sure_kill",
+        "Both at 1HP, next shell known live, my turn; have Pills.",
+        _scenario_pills_as_last_resort,
+        "SHOOT_OPPONENT (guaranteed kill) — pills are a 60% suicide here.",
+    ),
+    Scenario(
+        "pills_when_desperate",
+        "1HP vs 3HP, next shell known live, have only Pills.",
+        _scenario_pills_desperate,
+        "SHOOT_OPPONENT (still damages them) — pills 60% suicide.",
+    ),
+    Scenario(
+        "cuff_saw_combo",
+        "Opp 2HP, next shell known LIVE, have Cuff + Saw.",
+        _scenario_cuff_before_saw_combo,
+        "Chain: USE_HANDCUFF → USE_HANDSAW → SHOOT_OPPONENT (clean lethal).",
+    ),
+    Scenario(
+        "inverter_save_from_known_live",
+        "Agent 1HP, next shell known LIVE, have Inverter.",
+        _scenario_inverter_flip_known_live_to_save_life,
+        "USE_INVERTER (flip live→blank) to survive; creative defensive play.",
+    ),
+    Scenario(
+        "glass_peek_unseen_all_live",
+        "Fresh 3L chamber, have Glass.",
+        _scenario_glass_then_act_all_live,
+        "USE_GLASS first (free info), then act.",
+    ),
+    Scenario(
+        "opp_cuffed_go_aggressive",
+        "Opp cuffed + 2HP + known live; have Saw.",
+        _scenario_opp_cuffed_go_aggressive,
+        "USE_HANDSAW → SHOOT_OPPONENT (safe kill, opp can't retaliate).",
+    ),
+    Scenario(
+        "phone_redundant_with_glass_info",
+        "Known pos 0, have Glass + Phone.",
+        _scenario_useless_phone_after_glass,
+        "USE_PHONE for NEW info (not Glass, which would repeat pos 0).",
     ),
 ]
 
