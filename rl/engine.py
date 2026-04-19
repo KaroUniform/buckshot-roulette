@@ -238,7 +238,7 @@ class BuckshotEngine:
             # Any PICK_<item> is always allowed by per-turn quota (we check
             # inventory and per-item usability only — no 1-item limit now).
             for item in _NON_ADRENALINE_ITEMS:
-                if opp.inventory[int(item)] > 0 and self._item_usable(item, target=opp):
+                if opp.inventory[int(item)] > 0 and self._item_usable(item, user=me, target=opp):
                     mask[int(_PICK_ACTION_FOR_ITEM[item])] = True
             # Defensive fallback: if the gating in USE_ADRENALINE somehow let
             # us into pick-mode with no usable picks left (e.g., state was
@@ -258,14 +258,14 @@ class BuckshotEngine:
         # Item uses — any number of items per turn, blocked only by per-item
         # legality (empty shotgun, full HP for smoke, already-cuffed target).
         for item in _NON_ADRENALINE_ITEMS:
-            if me.inventory[int(item)] > 0 and self._item_usable(item, target=opp):
+            if me.inventory[int(item)] > 0 and self._item_usable(item, user=me, target=opp):
                 mask[int(_USE_ACTION_FOR_ITEM[item])] = True
 
         # Adrenaline: legal whenever we have one, we're not already mid-pick,
         # and the opponent has at least one stealable+usable item.
         if me.inventory[int(Item.ADRENALINE)] > 0:
             opp_has_stealable = any(
-                opp.inventory[int(it)] > 0 and self._item_usable(it, target=opp)
+                opp.inventory[int(it)] > 0 and self._item_usable(it, user=me, target=opp)
                 for it in _NON_ADRENALINE_ITEMS
             )
             if opp_has_stealable:
@@ -273,14 +273,18 @@ class BuckshotEngine:
 
         return mask
 
-    def _item_usable(self, item: Item, target: PlayerState) -> bool:
-        """Per-item legality predicate (beyond inventory presence)."""
+    def _item_usable(self, item: Item, user: PlayerState, target: PlayerState) -> bool:
+        """Per-item legality predicate (beyond inventory presence).
+
+        `user` is the player performing the action (affects SMOKE self-heal).
+        `target` is the player the item is applied to (affects HANDCUFF).
+        Shell-based items ignore both and depend only on shotgun state.
+        """
         s = self.state
-        me = s.players[s.current_player]
         if item in (Item.HANDSAW, Item.BEER, Item.GLASS, Item.PHONE, Item.INVERTER):
             return bool(s.shells)
         if item == Item.SMOKE:
-            return me.hp < me.max_hp
+            return user.hp < user.max_hp
         if item == Item.HANDCUFF:
             return not target.skip_next_turn
         if item == Item.PILLS:

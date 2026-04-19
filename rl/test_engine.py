@@ -79,6 +79,32 @@ def test_smoke_caps_at_max_hp():
     print("ok  smoke_caps_at_max_hp")
 
 
+def test_item_usable_respects_user_and_target_args():
+    """_item_usable(item, user, target) must key SMOKE off `user` and HANDCUFF
+    off `target` regardless of whose turn it is. Guards against the bug-bot
+    issue where SMOKE silently ignored `target` and used `current_player`."""
+    e = BuckshotEngine(seed=7)
+    e.reset()
+    p0 = e.state.players[0]
+    p1 = e.state.players[1]
+    # Force a known configuration: p0 is full HP, p1 is injured; cuff p0, not p1.
+    p0.hp = p0.max_hp
+    p1.hp = max(1, p1.max_hp - 1)
+    p0.skip_next_turn = True
+    p1.skip_next_turn = False
+    # SMOKE: usability must depend on `user`, not current_player.
+    _assert(not e._item_usable(Item.SMOKE, user=p0, target=p1),
+            "SMOKE should be unusable when user is at full HP")
+    _assert(e._item_usable(Item.SMOKE, user=p1, target=p0),
+            "SMOKE should be usable when user is below max HP")
+    # HANDCUFF: usability must depend on `target`, not current_player.
+    _assert(not e._item_usable(Item.HANDCUFF, user=p1, target=p0),
+            "HANDCUFF should be illegal when target is already cuffed")
+    _assert(e._item_usable(Item.HANDCUFF, user=p0, target=p1),
+            "HANDCUFF should be legal when target is not cuffed")
+    print("ok  item_usable_respects_user_and_target_args")
+
+
 def test_handsaw_doubles_damage_then_resets():
     e = BuckshotEngine(seed=5)
     e.reset()
@@ -320,6 +346,7 @@ def main() -> int:
         test_observation_shape_is_stable,
         test_action_mask_excludes_unowned_items,
         test_smoke_caps_at_max_hp,
+        test_item_usable_respects_user_and_target_args,
         test_handsaw_doubles_damage_then_resets,
         test_blank_self_shot_keeps_turn,
         test_blank_self_shot_on_last_shell_still_keeps_turn,
