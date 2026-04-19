@@ -301,3 +301,69 @@ propagate to early-episode decisions. This is the cleanest test of
 whether the curriculum alone, with a purely sparse terminal signal, is
 enough to teach survival.
 
+---
+
+## E7 — curriculum-only + γ=0.999 (no shaping)
+
+| | |
+|---|---|
+| Date | 2026-04-20 |
+| Run dir | `rl_runs/E7_curriculum_only/` |
+| Hypothesis | E5/E6 added shaping that diluted the terminal signal. Strip shaping back to zero, keep the low-HP curriculum, raise γ 0.995 → 0.999 so the sparse ±1 can credit-assign across long episodes. If the survival blindspot is purely a credit-assignment problem, longer horizons should fix it. |
+| Setup | 3M steps; lr=1e-3; ent=0.01; hidden=256; `low_hp_prob=0.3`; `hp_shaping=0.0`; γ=0.999; 4 league champions in pool. ~16 min on 1× H100. |
+| Result | Final policy WR vs heuristics: random 0.94, aggressive 0.84, conservative 0.75. Terminal `mean_return_50 = -0.08` (regressed from peak +0.20 at u=625). Internal round-robin: `policy_final` ranks **5th of 9** snapshots (mean_wr=0.539); peak is `snapshot_u625` (0.573). Three rock-paper-scissors triples detected. |
+
+### Behavioral probe: survival failures persist
+
+| Scenario | E5 / E6 | E7 | V-estimate at state |
+|---|---|---|---|
+| `beer_when_certain_death_next_shot` | SHOOT_OPPONENT 1.00 | SHOOT_OPPONENT 1.00 | **−0.837** |
+| `inverter_save_from_known_live` | SHOOT_OPPONENT 1.00 | SHOOT_OPPONENT 1.00 | **−0.712** |
+| `pills_when_desperate` | USE_PILLS 1.00 | USE_PILLS 1.00 | −0.586 |
+| `pills_vs_sure_kill` | correct | SHOOT_OPPONENT 1.00 | +0.967 |
+| `cuff_saw_combo` | correct | USE_HANDSAW 0.79 → SHOOT_OPP 0.08 | +0.985 |
+
+The critic now correctly assigns large negative value to 1HP+known-live
+states (E5/E6's V-estimates were closer to 0). γ=0.999 *did* propagate
+the loss signal back. But the **policy still picks SHOOT_OPPONENT** —
+i.e., the agent *knows* it's losing in this state but still picks the
+self-kill action with p=1.00.
+
+### Interpretation: this is policy collapse, not credit assignment
+
+The actor and critic disagree consistently in the survival scenarios:
+critic says V ≈ −0.7 (almost-certain loss), actor still puts ~all mass
+on SHOOT_OPPONENT. The standard PPO update can't fix this:
+
+1. The action is *masked-legal*, so it stays in the support.
+2. Past on-policy rollouts almost never selected USE_BEER /
+   USE_INVERTER in this exact state (P(visit) ≈ 0 even with curriculum).
+3. With no on-policy data for the alternative, the advantage estimate
+   for USE_BEER is essentially noise — sometimes negative, sometimes
+   positive. Over the full update window, gradients pull toward the
+   *visited* action regardless of its expected return, because that's
+   the one with consistent advantage signal.
+
+This is the **mode collapse** failure mode: once entropy is annealed
+(ent_coef=0.01 from u≥100) and the policy commits to SHOOT_OPPONENT in
+this state, no future rollout will ever pick BEER, so the actor cannot
+update toward it. Curriculum brought the *state* into the visit
+distribution; it did not bring the *good action in that state* into the
+visit distribution.
+
+### Next step → E8 (user-requested) and E9 (likely real fix)
+
+E8 will test the user's 4-component asymmetric shaping (damage / heal /
+round-survive bonuses). Hypothesis: small dense rewards for *the right
+behavior* (e.g., heal_bonus when HP restored) might give USE_SMOKE /
+USE_BEER positive immediate reward they currently lack. Calibrated so
+shaped budget ≈ 0.3-0.5 per win << terminal ±1.
+
+But the deeper fix is **forcing visits to the alternative action**.
+That's E9: a scenario-replay buffer that resets ~15% of episodes
+directly into "agent at 1HP + known-live + has BEER" states and lets
+on-policy exploration produce the contrast (BEER survives → wins;
+SHOOT_OPPONENT here → instant -1). Until USE_BEER appears in rollouts
+with non-zero frequency in this state, the actor cannot learn to
+prefer it regardless of reward shape.
+
