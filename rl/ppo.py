@@ -58,6 +58,7 @@ class PPOConfig:
     eval_every_updates: int = 5
     eval_episodes: int = 100
     hp_shaping: float = 0.0
+    low_hp_prob: float = 0.0
     save_dir: str = "rl_runs"
     run_name: str = field(default_factory=lambda: f"ppo_{int(time.time())}")
 
@@ -90,9 +91,9 @@ def record_terminal_returns(
     return n
 
 
-def make_env_fn(pool: OpponentPool, seed: int, hp_shaping: float = 0.0):
+def make_env_fn(pool: OpponentPool, seed: int, hp_shaping: float = 0.0, low_hp_prob: float = 0.0):
     def thunk():
-        env = SingleAgentBuckshotEnv(opponent_pool=pool, hp_shaping=hp_shaping)
+        env = SingleAgentBuckshotEnv(opponent_pool=pool, hp_shaping=hp_shaping, low_hp_prob=low_hp_prob)
         env.reset(seed=seed)
         return env
 
@@ -129,7 +130,7 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
 
     # Vectorized env
     envs = gym.vector.SyncVectorEnv(
-        [make_env_fn(pool, cfg.seed + i, cfg.hp_shaping) for i in range(cfg.num_envs)]
+        [make_env_fn(pool, cfg.seed + i, cfg.hp_shaping, cfg.low_hp_prob) for i in range(cfg.num_envs)]
     )
 
     obs_dim = envs.single_observation_space["observation"].shape[0]
@@ -359,6 +360,13 @@ def parse_args() -> PPOConfig:
         help="alpha for dense HP reward shaping: alpha*(Δhp_me − Δhp_opp) per step. "
              "0 = pure sparse ±1 terminal reward (default).",
     )
+    p.add_argument(
+        "--low-hp-prob",
+        type=float,
+        default=0.0,
+        help="Probability in [0,1] of starting agent at HP=1 after reset. Oversamples "
+             "defensive states (BEER/INVERTER survival). 0 = natural HP distribution.",
+    )
     a = p.parse_args()
     cfg = PPOConfig(
         total_timesteps=a.total_timesteps,
@@ -374,6 +382,7 @@ def parse_args() -> PPOConfig:
         eval_every_updates=a.eval_every,
         eval_episodes=a.eval_episodes,
         hp_shaping=a.hp_shaping,
+        low_hp_prob=a.low_hp_prob,
     )
     if a.run_name:
         cfg.run_name = a.run_name

@@ -38,6 +38,7 @@ class SingleAgentBuckshotEnv(gym.Env):
         opponent_pool: Optional[OpponentPool] = None,
         agent_pid: Optional[int] = None,
         hp_shaping: float = 0.0,
+        low_hp_prob: float = 0.0,
     ) -> None:
         """
         hp_shaping: if > 0, adds dense per-step reward
@@ -47,6 +48,16 @@ class SingleAgentBuckshotEnv(gym.Env):
             is potential-style: the full game is terminal ±1, so the
             sparse signal still dominates at |alpha| < 0.5. Default 0
             = vanilla sparse reward (back-compat).
+
+        low_hp_prob: if > 0, with probability p override the agent's
+            starting HP to 1 after reset. Used to oversample defensive
+            states the natural episode distribution produces rarely —
+            "HP=1 + known-live next shell + has BEER" is exponentially
+            rare from healthy starts, so the agent has no experience to
+            learn survival plays from (E5). The override is applied
+            AFTER engine.reset() and BEFORE the opponent's pre-turn
+            moves, so the engine's own HP-range sampling still
+            generates diverse opponent HPs. Default 0 = no curriculum.
         """
         super().__init__()
         self.engine = BuckshotEngine()
@@ -72,6 +83,7 @@ class SingleAgentBuckshotEnv(gym.Env):
         self.pool = opponent_pool or OpponentPool({"random": random_opponent})
         self.agent_pid = agent_pid
         self.hp_shaping = float(hp_shaping)
+        self.low_hp_prob = float(low_hp_prob)
         self._opp_fn: OpponentFn = random_opponent
         self._opp_name = "random"
         self._agent_pid_this_ep = 0
@@ -102,6 +114,14 @@ class SingleAgentBuckshotEnv(gym.Env):
                 self._agent_pid_this_ep = self.agent_pid
 
             self._opp_name, self._opp_fn = self.pool.sample(self._opp_rng)
+
+            if self.low_hp_prob > 0.0 and self._opp_rng.random() < self.low_hp_prob:
+                # Keep engine-assigned max_hp (opp still has a normal max); only
+                # clamp agent's current HP to 1 so defensive scenarios are
+                # forced. Agent's max_hp stays as engine set — so SMOKE remains
+                # legal (hp < max_hp) and INVERTER / BEER have their usual
+                # survival value.
+                self.engine.state.players[self._agent_pid_this_ep].hp = 1
 
             terminated, terminal_reward = self._play_opponent_until_agent_turn()
             if not terminated:

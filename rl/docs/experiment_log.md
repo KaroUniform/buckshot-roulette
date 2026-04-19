@@ -196,3 +196,54 @@ Candidate experiments (not yet launched):
 3. **Opponent modelling / belief-based**: give the agent a learned prior
    over opponent's HP/items (the current obs has these fields but they're
    just raw features). Likely a bigger architecture change.
+
+---
+
+## E5 — dense HP-delta reward shaping (α = 0.05)
+
+| | |
+|---|---|
+| Date | 2026-04-20 |
+| Run dir | `rl_runs/E5_hp_shaping/` |
+| Hypothesis | A per-step shaping reward `α·(Δhp_me − Δhp_opp)` would densify the sparse ±1 terminal signal enough for the agent to learn that BEER / INVERTER preserve HP in lethal-shot states. |
+| Setup | 3M steps, lr=1e-3, ent=0.01, hidden=256, α=0.05; `--extra-opponent-ckpts` = all 4 A/B/C/D gen-2 champions (full league pool: 4 rule + up-to-8 self snapshots + 4 league finals = 12). ~16 min on 1× H100. |
+| Result | Training converged cleanly (final lr ~1e-6, KL ~2e-7). Mean WR vs 12-agent league = **0.517** (vs champion `A_ent005_gen2` baseline 0.531; SE ≈ 0.014 across 12×200 eps → inside noise). |
+
+### Behavioral probe: E5 vs `A_ent005_gen2`
+
+22 scenarios; only differences shown.
+
+| Scenario | Champion argmax | E5 argmax | Same? |
+|---|---|---|---|
+| `beer_when_certain_death_next_shot` | `SHOOT_OPPONENT` (1.00) | `SHOOT_OPPONENT` (1.00) | ✗ identical failure |
+| `inverter_save_from_known_live` | `SHOOT_OPPONENT` (1.00) | `SHOOT_OPPONENT` (1.00) | ✗ identical failure |
+| `handcuff_then_lethal` | `USE_HANDCUFF` (0.79) | `USE_HANDCUFF` (0.98) | ✓ sharper |
+| `inverter_known_blank` | `SHOOT_SELF` (1.00) | `SHOOT_SELF` (0.69) | ◇ noisier |
+| `pills_when_desperate` | `USE_PILLS` (0.99) | `USE_PILLS` (1.00) | ✗ same wrong (pills = 60% suicide) |
+| *(all other 17 scenarios)* | same | same | — |
+
+### Interpretation
+
+HP-shaping α=0.05 did **not** change behavior on the survival-item
+scenarios. The mechanism fails for a structural reason: `SHOOT_OPPONENT`
+on a known-live shell gives **immediate** `Δhp_opp = −1` (positive shaped
+reward), while `USE_BEER` / `USE_INVERTER` give **zero** `Δhp` this step —
+their value is the *counterfactual* avoided damage next turn, which the
+shaping term never observes. So α amplifies the agent's offensive bias
+rather than breaking it.
+
+The deeper issue is **experience, not reward**: P(agent at 1HP ∧ next
+shell known live ∧ has BEER) is exponentially rare across natural
+episode dynamics. In 3M steps the agent likely never faced this exact
+configuration, so whatever reward signal we attached, there's no
+gradient to shape.
+
+### Next step → E6
+
+Low-HP curriculum. Force `hp_start = 1` in ~20% of resets (and `hp_start
+= 2` in another 10%) to multiply the frequency of defensive states by
+~10×. Keep α=0.05 shaping so that once the agent *is* in a low-HP state,
+the (small) incentive to preserve HP is present. This targets the
+exploration gap directly rather than trying to increase the shaping
+signal until it dominates correct play.
+
