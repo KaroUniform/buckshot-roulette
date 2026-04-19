@@ -160,3 +160,7 @@ cython_debug/
 #.idea/
 .vscode/*
 .pyc
+
+# RL training outputs (checkpoints, metrics, tensorboard)
+rl_runs/
+wandb/
