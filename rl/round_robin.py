@@ -23,7 +23,12 @@ from typing import Optional
 import numpy as np
 import torch
 
-from rl.opponents import OpponentPool, make_frozen_policy_opponent
+from rl.opponents import (
+    NAMED_OPPONENTS,
+    OpponentFn,
+    OpponentPool,
+    make_frozen_policy_opponent,
+)
 from rl.policy import ActorCritic
 from rl.engine import NUM_ACTIONS
 from rl.single_agent_env import SingleAgentBuckshotEnv
@@ -44,10 +49,34 @@ def _ckpt_step(path: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _to_opponent_fn(competitor, device: str) -> OpponentFn:
+    """Coerce a round-robin competitor to an OpponentFn.
+
+    `competitor` is either:
+      * a torch ActorCritic policy → wrapped via make_frozen_policy_opponent
+      * an OpponentFn (callable taking obs, mask, rng) → returned as-is
+    """
+    if hasattr(competitor, "act") and hasattr(competitor, "forward"):
+        return make_frozen_policy_opponent(competitor, device=device)
+    return competitor
+
+
+def _agent_action(competitor, obs, mask, rng, device: str) -> int:
+    """Run competitor as the agent: torch policies use .act(), OpponentFn
+    callables use the (obs, mask, rng) signature directly."""
+    if hasattr(competitor, "act") and hasattr(competitor, "forward"):
+        with torch.no_grad():
+            obs_t = torch.from_numpy(obs).to(device).unsqueeze(0)
+            mask_t = torch.from_numpy(mask).to(device).unsqueeze(0)
+            return int(competitor.act(obs_t, mask_t).item())
+    return int(competitor(obs, mask, rng))
+
+
 def play_match(a, b, n_episodes: int, seed: int, device: str) -> float:
     """Return P(a wins) across n_episodes games where `a` is the agent and
-    `b` is the opponent in SingleAgentBuckshotEnv."""
-    opp_fn = make_frozen_policy_opponent(b, device=device)
+    `b` is the opponent in SingleAgentBuckshotEnv. Either may be a torch
+    policy (ActorCritic) or an OpponentFn (rule-based baseline)."""
+    opp_fn = _to_opponent_fn(b, device=device)
     pool = OpponentPool({"opp": opp_fn})
     env = SingleAgentBuckshotEnv(opponent_pool=pool)
     rng = np.random.default_rng(seed)
@@ -62,11 +91,8 @@ def play_match(a, b, n_episodes: int, seed: int, device: str) -> float:
             continue
         done = False
         while not done:
-            with torch.no_grad():
-                obs_t = torch.from_numpy(obs["observation"]).to(device).unsqueeze(0)
-                mask_t = torch.from_numpy(obs["action_mask"]).to(device).unsqueeze(0)
-                action = a.act(obs_t, mask_t).item()
-            obs, reward, term, trunc, info = env.step(int(action))
+            action = _agent_action(a, obs["observation"], obs["action_mask"], rng, device)
+            obs, reward, term, trunc, info = env.step(action)
             done = term or trunc
             if done and reward > 0:
                 wins += 1
@@ -76,7 +102,8 @@ def play_match(a, b, n_episodes: int, seed: int, device: str) -> float:
 def round_robin(ckpts_dir: str, episodes: int, seed: int, device: str,
                 max_ckpts: int = 8,
                 explicit_paths: Optional[list[str]] = None,
-                explicit_names: Optional[list[str]] = None) -> dict:
+                explicit_names: Optional[list[str]] = None,
+                include_baselines: Optional[list[str]] = None) -> dict:
     if explicit_paths:
         paths = list(explicit_paths)
         names = list(explicit_names or [os.path.basename(os.path.dirname(p)) or os.path.basename(p) for p in paths])
@@ -94,8 +121,26 @@ def round_robin(ckpts_dir: str, episodes: int, seed: int, device: str,
         if os.path.exists(final_path):
             paths.append(final_path)
         names = [os.path.basename(p).replace(".pt", "") for p in paths]
-    print(f"[round_robin] {len(paths)} checkpoints × {len(paths)-1} opponents × {episodes} eps")
+    n_neural = len(paths)
+    baseline_names = list(include_baselines or [])
+    # Validate baselines up front
+    for bname in baseline_names:
+        if bname not in NAMED_OPPONENTS:
+            raise ValueError(
+                f"Unknown baseline '{bname}'. Available: {list(NAMED_OPPONENTS)}"
+            )
+    print(
+        f"[round_robin] {n_neural} checkpoints + {len(baseline_names)} baselines "
+        f"× {n_neural + len(baseline_names) - 1} opponents × {episodes} eps"
+    )
     policies = [_load_checkpoint(p, device=device) for p in paths]
+    # Append baselines as additional competitors (they coerce to OpponentFn).
+    competitor_names = list(names) + list(baseline_names)
+    competitors = list(policies) + [NAMED_OPPONENTS[b] for b in baseline_names]
+    # Keep `names` and `policies` aliases for the rest of the function so
+    # existing print/cycle code reads cleanly.
+    names = competitor_names
+    policies = competitors
 
     # Pairwise win rates: wins[i][j] = P(i beats j)
     wins: dict[tuple[int, int], float] = {}
@@ -163,7 +208,18 @@ def main() -> int:
     p.add_argument("--device", default="cpu")
     p.add_argument("--max-ckpts", type=int, default=8)
     p.add_argument("--out", default=None)
+    p.add_argument(
+        "--include-baselines",
+        nargs="*",
+        default=None,
+        help="Names of rule-based opponents from rl.opponents.NAMED_OPPONENTS "
+             "to include as round-robin competitors (e.g. strong_baseline "
+             "aggressive). Useful for grounding neural results against an "
+             "absolute reference. Without this flag the round-robin is "
+             "neural-only.",
+    )
     a = p.parse_args()
+    baselines = a.include_baselines or []
 
     if a.league_dir:
         league_paths = sorted(glob.glob(os.path.join(a.league_dir, "*_gen*/policy_final.pt")))
@@ -176,6 +232,7 @@ def main() -> int:
             max_ckpts=a.max_ckpts,
             explicit_paths=league_paths,
             explicit_names=league_names,
+            include_baselines=baselines,
         )
         out = a.out or os.path.join(a.league_dir, "round_robin.json")
     elif a.sweep_dir:
@@ -189,13 +246,18 @@ def main() -> int:
             max_ckpts=a.max_ckpts,
             explicit_paths=sweep_paths,
             explicit_names=sweep_names,
+            include_baselines=baselines,
         )
         out = a.out or os.path.join(a.sweep_dir, "round_robin.json")
     else:
         if not a.ckpts_dir:
             print("ERROR: must pass ckpts_dir, --sweep-dir, or --league-dir")
             return 1
-        result = round_robin(a.ckpts_dir, a.episodes, a.seed, a.device, max_ckpts=a.max_ckpts)
+        result = round_robin(
+            a.ckpts_dir, a.episodes, a.seed, a.device,
+            max_ckpts=a.max_ckpts,
+            include_baselines=baselines,
+        )
         out = a.out or os.path.join(os.path.dirname(a.ckpts_dir) or ".", "round_robin.json")
 
     with open(out, "w") as f:
