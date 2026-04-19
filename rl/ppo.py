@@ -75,19 +75,33 @@ class PPOConfig:
 
 
 def record_terminal_returns(
-    buffer: list, done: np.ndarray, reward: np.ndarray, max_size: int = 200
+    buffer: list,
+    done: np.ndarray,
+    reward: np.ndarray,
+    running_return: np.ndarray,
+    max_size: int = 200,
 ) -> int:
-    """Append terminal-step rewards for each env that ended this step.
+    """Accumulate per-step rewards into `running_return` and flush the total
+    to `buffer` when an episode ends.
 
-    Pure helper so the metric-collection invariant ("each completed episode
-    contributes exactly once") can be unit-tested in isolation. The earlier
-    PPO loop also walked `infos["final_info"]`, which double-counted because
-    SyncVectorEnv populates it in lockstep with `done`.
+    With reward shaping active (hp_shaping / damage_bonus / heal_bonus /
+    round_survive_bonus), intermediate steps produce non-zero rewards that
+    contribute to the true episode return. Previously this helper only
+    pushed the terminal step's reward, so `rollout/mean_return_50` on
+    shaping runs silently omitted all the in-episode shaped contributions.
+
+    `running_return` is a per-env float array that the caller owns; this
+    function reads and mutates it in place (adding `reward`, zeroing
+    entries on termination). Same "each completed episode contributes
+    exactly once" invariant as before — still safe under SyncVectorEnv's
+    lockstep `done` semantics.
     """
+    running_return += reward.astype(running_return.dtype)
     n = 0
     for env_id in range(len(done)):
         if done[env_id]:
-            buffer.append(float(reward[env_id]))
+            buffer.append(float(running_return[env_id]))
+            running_return[env_id] = 0.0
             n += 1
             if len(buffer) > max_size:
                 buffer.pop(0)
@@ -184,6 +198,7 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
     num_updates = cfg.total_timesteps // cfg.batch_size
     global_step = 0
     ep_returns_window: list[float] = []
+    ep_running_return = np.zeros(cfg.num_envs, dtype=np.float32)
     n_terminations_total = 0  # for logging + regression-test on duplicate counting
     log_path = os.path.join(run_dir, "metrics.jsonl")
     log_file = open(log_path, "w")
@@ -218,9 +233,13 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
                 next_obs = torch.from_numpy(obs_dict["observation"]).to(device)
                 next_mask = torch.from_numpy(obs_dict["action_mask"]).to(device)
 
-                # Episodic return = the terminal step's reward (±1 zero-sum).
+                # Episodic return = cumulative reward over the episode.
+                # Without shaping this degenerates to the terminal ±1; with
+                # shaping active (E5/E6/E8) the intermediate contributions
+                # must be included for the logged metric to match the true
+                # return PPO is optimizing.
                 n_terminations_total += record_terminal_returns(
-                    ep_returns_window, done, reward
+                    ep_returns_window, done, reward, ep_running_return
                 )
 
             # ---- GAE ----
