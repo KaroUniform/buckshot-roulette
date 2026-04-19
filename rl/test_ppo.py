@@ -97,12 +97,15 @@ def test_ppo_termination_count_logged():
             lines = [json.loads(l) for l in f if l.strip()]
         last = lines[-1]
         n_term = last["rollout/n_terminations_total"]
-        # Must complete at least one episode in 256 env-steps
+        # Must complete at least one episode in total_timesteps env-steps
         _assert(n_term >= 1, f"No terminations recorded: {n_term}")
-        # Cap at total env-steps (terminations can never exceed steps taken)
+        # Cap at total env-steps across the WHOLE run (n_terminations_total
+        # accumulates over every update, not just the last batch). Each
+        # terminated env consumed at least one step, so the count can
+        # never exceed total_timesteps.
         _assert(
-            n_term <= cfg.batch_size,
-            f"More terminations ({n_term}) than env-steps ({cfg.batch_size}) — impossible",
+            n_term <= cfg.total_timesteps,
+            f"More terminations ({n_term}) than total env-steps ({cfg.total_timesteps}) — impossible",
         )
     print(f"ok  ppo_termination_count_logged (n_term={n_term})")
 

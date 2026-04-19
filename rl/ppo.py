@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -289,7 +290,6 @@ def train(cfg: PPOConfig) -> ActorCritic:
                 f"pool={len(pool)}"
             )
 
-        import json
         log_file.write(json.dumps(log_entry) + "\n")
         log_file.flush()
 

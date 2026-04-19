@@ -68,7 +68,7 @@ def run_cfr(
     # Save the average policy as a tabular dict[info_state_str] -> dict[action]->prob
     avg = solver.average_policy()
     table: dict = {}
-    for state_str, action_probs in avg.action_probability_array_for_states().items() if False else _enumerate_avg_policy(game, avg).items():
+    for state_str, action_probs in _enumerate_avg_policy(game, avg).items():
         table[state_str] = action_probs
 
     policy_path = os.path.join(out_dir, "cfr_avg_policy.pkl")
