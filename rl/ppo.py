@@ -303,9 +303,11 @@ def parse_args() -> PPOConfig:
     p.add_argument("--num-steps", type=int, default=128)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--ent-coef", type=float, default=0.01)
+    p.add_argument("--hidden", type=int, default=256)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--run-name", type=str, default=None)
+    p.add_argument("--save-dir", type=str, default="rl_runs")
     p.add_argument("--snapshot-every", type=int, default=10)
     p.add_argument("--eval-every", type=int, default=5)
     p.add_argument("--eval-episodes", type=int, default=100)
@@ -316,8 +318,10 @@ def parse_args() -> PPOConfig:
         num_steps=a.num_steps,
         learning_rate=a.lr,
         ent_coef=a.ent_coef,
+        hidden=a.hidden,
         seed=a.seed,
         device=a.device,
+        save_dir=a.save_dir,
         snapshot_every_updates=a.snapshot_every,
         eval_every_updates=a.eval_every,
         eval_episodes=a.eval_episodes,
