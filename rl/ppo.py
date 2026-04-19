@@ -142,158 +142,160 @@ def train(cfg: PPOConfig) -> ActorCritic:
     print(f"[{cfg.run_name}] {num_updates} updates of {cfg.batch_size} steps each "
           f"(envs={cfg.num_envs}, rollout={cfg.num_steps}) on {device}")
 
-    for update in range(1, num_updates + 1):
-        if cfg.anneal_lr:
-            frac = 1.0 - (update - 1) / num_updates
-            for pg in optimizer.param_groups:
-                pg["lr"] = frac * cfg.learning_rate
+    try:
+        for update in range(1, num_updates + 1):
+            if cfg.anneal_lr:
+                frac = 1.0 - (update - 1) / num_updates
+                for pg in optimizer.param_groups:
+                    pg["lr"] = frac * cfg.learning_rate
 
-        # ---- Rollout ----
-        for step in range(cfg.num_steps):
-            global_step += cfg.num_envs
-            obs_buf[step] = next_obs
-            mask_buf[step] = next_mask
-            dones_buf[step] = next_done
-
-            with torch.no_grad():
-                action, logprob, _, value = policy.get_action_and_value(next_obs, next_mask)
-                values_buf[step] = value
-            actions_buf[step] = action
-            logprobs_buf[step] = logprob
-
-            obs_dict, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
-            done = np.logical_or(terminations, truncations)
-            rewards_buf[step] = torch.from_numpy(reward.astype(np.float32)).to(device)
-            next_done = torch.from_numpy(done.astype(np.float32)).to(device)
-            next_obs = torch.from_numpy(obs_dict["observation"]).to(device)
-            next_mask = torch.from_numpy(obs_dict["action_mask"]).to(device)
-
-            # Episodic return = the terminal step's reward (±1 zero-sum).
-            n_terminations_total += record_terminal_returns(
-                ep_returns_window, done, reward
-            )
-
-        # ---- GAE ----
-        with torch.no_grad():
-            _, _, _, next_value = policy.get_action_and_value(next_obs, next_mask)
-            advantages = torch.zeros_like(rewards_buf)
-            last_gae = 0.0
-            for t in reversed(range(cfg.num_steps)):
-                if t == cfg.num_steps - 1:
-                    next_non_terminal = 1.0 - next_done
-                    next_v = next_value
-                else:
-                    next_non_terminal = 1.0 - dones_buf[t + 1]
-                    next_v = values_buf[t + 1]
-                delta = rewards_buf[t] + cfg.gamma * next_v * next_non_terminal - values_buf[t]
-                last_gae = delta + cfg.gamma * cfg.gae_lambda * next_non_terminal * last_gae
-                advantages[t] = last_gae
-            returns = advantages + values_buf
-
-        # ---- PPO update ----
-        b_obs = obs_buf.reshape(-1, obs_dim)
-        b_masks = mask_buf.reshape(-1, NUM_ACTIONS)
-        b_actions = actions_buf.reshape(-1)
-        b_logprobs = logprobs_buf.reshape(-1)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values_buf.reshape(-1)
-
-        b_inds = np.arange(cfg.batch_size)
-        clipfracs: list[float] = []
-        approx_kl_avg = 0.0
-        for epoch in range(cfg.update_epochs):
-            np.random.shuffle(b_inds)
-            for start in range(0, cfg.batch_size, cfg.minibatch_size):
-                end = start + cfg.minibatch_size
-                mb_inds = b_inds[start:end]
-
-                _, new_logprob, entropy, new_value = policy.get_action_and_value(
-                    b_obs[mb_inds], b_masks[mb_inds], b_actions[mb_inds]
-                )
-                logratio = new_logprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
+            # ---- Rollout ----
+            for step in range(cfg.num_steps):
+                global_step += cfg.num_envs
+                obs_buf[step] = next_obs
+                mask_buf[step] = next_mask
+                dones_buf[step] = next_done
 
                 with torch.no_grad():
-                    approx_kl = ((ratio - 1) - logratio).mean().item()
-                    clipfracs.append(((ratio - 1.0).abs() > cfg.clip_coef).float().mean().item())
-                approx_kl_avg = approx_kl
+                    action, logprob, _, value = policy.get_action_and_value(next_obs, next_mask)
+                    values_buf[step] = value
+                actions_buf[step] = action
+                logprobs_buf[step] = logprob
 
-                mb_advantages = b_advantages[mb_inds]
-                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                obs_dict, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+                done = np.logical_or(terminations, truncations)
+                rewards_buf[step] = torch.from_numpy(reward.astype(np.float32)).to(device)
+                next_done = torch.from_numpy(done.astype(np.float32)).to(device)
+                next_obs = torch.from_numpy(obs_dict["observation"]).to(device)
+                next_mask = torch.from_numpy(obs_dict["action_mask"]).to(device)
 
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                # Episodic return = the terminal step's reward (±1 zero-sum).
+                n_terminations_total += record_terminal_returns(
+                    ep_returns_window, done, reward
+                )
 
-                v_loss = 0.5 * ((new_value - b_returns[mb_inds]) ** 2).mean()
-                ent_loss = entropy.mean()
+            # ---- GAE ----
+            with torch.no_grad():
+                _, _, _, next_value = policy.get_action_and_value(next_obs, next_mask)
+                advantages = torch.zeros_like(rewards_buf)
+                last_gae = 0.0
+                for t in reversed(range(cfg.num_steps)):
+                    if t == cfg.num_steps - 1:
+                        next_non_terminal = 1.0 - next_done
+                        next_v = next_value
+                    else:
+                        next_non_terminal = 1.0 - dones_buf[t + 1]
+                        next_v = values_buf[t + 1]
+                    delta = rewards_buf[t] + cfg.gamma * next_v * next_non_terminal - values_buf[t]
+                    last_gae = delta + cfg.gamma * cfg.gae_lambda * next_non_terminal * last_gae
+                    advantages[t] = last_gae
+                returns = advantages + values_buf
 
-                loss = pg_loss - cfg.ent_coef * ent_loss + cfg.vf_coef * v_loss
+            # ---- PPO update ----
+            b_obs = obs_buf.reshape(-1, obs_dim)
+            b_masks = mask_buf.reshape(-1, NUM_ACTIONS)
+            b_actions = actions_buf.reshape(-1)
+            b_logprobs = logprobs_buf.reshape(-1)
+            b_advantages = advantages.reshape(-1)
+            b_returns = returns.reshape(-1)
+            b_values = values_buf.reshape(-1)
 
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(policy.parameters(), cfg.max_grad_norm)
-                optimizer.step()
+            b_inds = np.arange(cfg.batch_size)
+            clipfracs: list[float] = []
+            approx_kl_avg = 0.0
+            for epoch in range(cfg.update_epochs):
+                np.random.shuffle(b_inds)
+                for start in range(0, cfg.batch_size, cfg.minibatch_size):
+                    end = start + cfg.minibatch_size
+                    mb_inds = b_inds[start:end]
 
-            if cfg.target_kl is not None and approx_kl_avg > cfg.target_kl:
-                break
+                    _, new_logprob, entropy, new_value = policy.get_action_and_value(
+                        b_obs[mb_inds], b_masks[mb_inds], b_actions[mb_inds]
+                    )
+                    logratio = new_logprob - b_logprobs[mb_inds]
+                    ratio = logratio.exp()
 
-        # ---- League snapshot ----
-        if update % cfg.snapshot_every_updates == 0:
-            snap = copy.deepcopy(policy).eval()
-            for p in snap.parameters():
-                p.requires_grad_(False)
-            snap_name = f"snapshot_u{update}"
-            pool.add(snap_name, make_frozen_policy_opponent(snap, device=cfg.device), weight=1.0)
-            # Persist to disk so we can analyse training trajectory later.
-            ckpts_dir = os.path.join(run_dir, "checkpoints")
-            os.makedirs(ckpts_dir, exist_ok=True)
-            torch.save(snap.state_dict(), os.path.join(ckpts_dir, f"{snap_name}.pt"))
-            # Trim oldest snapshots beyond cap (in pool only — keep all on disk)
-            snap_names = [n for n in pool.opponents if n.startswith("snapshot_")]
-            while len(snap_names) > cfg.max_pool_snapshots:
-                drop = snap_names.pop(0)
-                del pool.opponents[drop]
-                del pool.weights[drop]
+                    with torch.no_grad():
+                        approx_kl = ((ratio - 1) - logratio).mean().item()
+                        clipfracs.append(((ratio - 1.0).abs() > cfg.clip_coef).float().mean().item())
+                    approx_kl_avg = approx_kl
 
-        # ---- Logging + eval ----
-        recent_return = float(np.mean(ep_returns_window[-50:])) if ep_returns_window else 0.0
-        log_entry = {
-            "update": update,
-            "global_step": global_step,
-            "lr": optimizer.param_groups[0]["lr"],
-            "loss/policy": float(pg_loss.item()),
-            "loss/value": float(v_loss.item()),
-            "loss/entropy": float(ent_loss.item()),
-            "approx_kl": float(approx_kl_avg),
-            "clipfrac": float(np.mean(clipfracs)) if clipfracs else 0.0,
-            "rollout/mean_return_50": recent_return,
-            "rollout/n_terminations_total": n_terminations_total,
-            "pool_size": len(pool),
-        }
+                    mb_advantages = b_advantages[mb_inds]
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
-        if update % cfg.eval_every_updates == 0 or update == 1:
-            wr = evaluate_policy(
-                policy, opponents=NAMED_OPPONENTS,
-                n_episodes=cfg.eval_episodes, seed=cfg.seed + update,
-                device=cfg.device,
-            )
-            for name, rate in wr.items():
-                log_entry[f"eval/winrate_vs_{name}"] = float(rate)
-            print(
-                f"u{update:>4} step={global_step:>7} "
-                f"return50={recent_return:+.2f} "
-                f"vs_random={wr.get('random', 0):.2f} "
-                f"vs_aggr={wr.get('aggressive', 0):.2f} "
-                f"vs_cons={wr.get('conservative', 0):.2f} "
-                f"pool={len(pool)}"
-            )
+                    pg_loss1 = -mb_advantages * ratio
+                    pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef)
+                    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-        log_file.write(json.dumps(log_entry) + "\n")
-        log_file.flush()
+                    v_loss = 0.5 * ((new_value - b_returns[mb_inds]) ** 2).mean()
+                    ent_loss = entropy.mean()
 
-    log_file.close()
+                    loss = pg_loss - cfg.ent_coef * ent_loss + cfg.vf_coef * v_loss
+
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(policy.parameters(), cfg.max_grad_norm)
+                    optimizer.step()
+
+                if cfg.target_kl is not None and approx_kl_avg > cfg.target_kl:
+                    break
+
+            # ---- League snapshot ----
+            if update % cfg.snapshot_every_updates == 0:
+                snap = copy.deepcopy(policy).eval()
+                for p in snap.parameters():
+                    p.requires_grad_(False)
+                snap_name = f"snapshot_u{update}"
+                pool.add(snap_name, make_frozen_policy_opponent(snap, device=cfg.device), weight=1.0)
+                # Persist to disk so we can analyse training trajectory later.
+                ckpts_dir = os.path.join(run_dir, "checkpoints")
+                os.makedirs(ckpts_dir, exist_ok=True)
+                torch.save(snap.state_dict(), os.path.join(ckpts_dir, f"{snap_name}.pt"))
+                # Trim oldest snapshots beyond cap (in pool only — keep all on disk)
+                snap_names = [n for n in pool.opponents if n.startswith("snapshot_")]
+                while len(snap_names) > cfg.max_pool_snapshots:
+                    drop = snap_names.pop(0)
+                    del pool.opponents[drop]
+                    del pool.weights[drop]
+
+            # ---- Logging + eval ----
+            recent_return = float(np.mean(ep_returns_window[-50:])) if ep_returns_window else 0.0
+            log_entry = {
+                "update": update,
+                "global_step": global_step,
+                "lr": optimizer.param_groups[0]["lr"],
+                "loss/policy": float(pg_loss.item()),
+                "loss/value": float(v_loss.item()),
+                "loss/entropy": float(ent_loss.item()),
+                "approx_kl": float(approx_kl_avg),
+                "clipfrac": float(np.mean(clipfracs)) if clipfracs else 0.0,
+                "rollout/mean_return_50": recent_return,
+                "rollout/n_terminations_total": n_terminations_total,
+                "pool_size": len(pool),
+            }
+
+            if update % cfg.eval_every_updates == 0 or update == 1:
+                wr = evaluate_policy(
+                    policy, opponents=NAMED_OPPONENTS,
+                    n_episodes=cfg.eval_episodes, seed=cfg.seed + update,
+                    device=cfg.device,
+                )
+                for name, rate in wr.items():
+                    log_entry[f"eval/winrate_vs_{name}"] = float(rate)
+                print(
+                    f"u{update:>4} step={global_step:>7} "
+                    f"return50={recent_return:+.2f} "
+                    f"vs_random={wr.get('random', 0):.2f} "
+                    f"vs_aggr={wr.get('aggressive', 0):.2f} "
+                    f"vs_cons={wr.get('conservative', 0):.2f} "
+                    f"pool={len(pool)}"
+                )
+
+            log_file.write(json.dumps(log_entry) + "\n")
+            log_file.flush()
+
+    finally:
+        log_file.close()
     ckpt = os.path.join(run_dir, "policy_final.pt")
     torch.save(policy.state_dict(), ckpt)
     print(f"saved final policy to {ckpt}")

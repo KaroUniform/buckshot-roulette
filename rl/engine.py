@@ -232,13 +232,14 @@ class BuckshotEngine:
             for item in _NON_ADRENALINE_ITEMS:
                 if opp.inventory[int(item)] > 0 and self._item_usable(item, target=opp):
                     mask[int(_PICK_ACTION_FOR_ITEM[item])] = True
-            # Also allowed: do nothing? Original game forces a pick or wastes
-            # adrenaline by timeout. We'll require a pick whenever any is legal.
-            # If NO item is usable we silently drop adrenaline by allowing both
-            # shoot actions as a fallback.
-            if not mask.any():
-                mask[int(Action.SHOOT_OPPONENT)] = s.shells != []
-                mask[int(Action.SHOOT_SELF)] = s.shells != []
+            # Defensive fallback: if the gating in USE_ADRENALINE somehow let
+            # us into pick-mode with no usable picks left (e.g., state was
+            # externally mutated in tests), fall through to shoot actions —
+            # adrenaline is effectively wasted but the episode can proceed.
+            # The outer `_advance_turn` clears adrenaline_active on any shot.
+            if not mask.any() and s.shells:
+                mask[int(Action.SHOOT_OPPONENT)] = True
+                mask[int(Action.SHOOT_SELF)] = True
             return mask
 
         # Normal turn: shoot is always legal if shotgun has shells
