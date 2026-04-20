@@ -203,7 +203,12 @@ class SimpleBuckshotState(pyspiel.State):
     # by algos like deep CFR by concatenating `player` as a separate
     # feature at the network input, not by flipping positions here.
     def _state_tensor(self, player: int) -> np.ndarray:
-        # [hp_p0, hp_p1, hp_max, n_shells, n_live_remain, n_blank_remain, cur_player]
+        # [hp_p0, hp_p1, hp_max, n_shells, n_live_remain, n_blank_remain,
+        #  cur_player, next_player_after_chance]
+        # next_player_after_chance distinguishes otherwise-identical chance
+        # nodes whose post-deal mover differs (e.g., round start vs.
+        # reload after a blank-self-shot). Kept in-tensor so the encoding
+        # matches information_state_string's `next=` field.
         del player
         n = len(self._shells)
         n_live = sum(1 for x in self._shells if x)
@@ -217,6 +222,7 @@ class SimpleBuckshotState(pyspiel.State):
                 n_live,
                 n_blank,
                 float(self._cur_player),
+                float(self._next_player_after_chance),
             ],
             dtype=np.float32,
         )
