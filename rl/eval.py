@@ -53,3 +53,45 @@ def evaluate_policy(
         results[name] = wins / n_episodes
 
     return results
+
+
+def evaluate_recurrent_policy(
+    policy,
+    opponents: Optional[dict[str, OpponentFn]] = None,
+    n_episodes: int = 200,
+    seed: int = 12345,
+    device: str = "cpu",
+) -> dict[str, float]:
+    """Like evaluate_policy but for RecurrentActorCritic.
+
+    Maintains per-episode hidden state (reset on each env reset).
+    """
+    opponents = opponents or NAMED_OPPONENTS
+    rng = np.random.default_rng(seed)
+    results: dict[str, float] = {}
+
+    for name, fn in opponents.items():
+        pool = OpponentPool({name: fn})
+        env = SingleAgentBuckshotEnv(opponent_pool=pool)
+        wins = 0
+        for ep in range(n_episodes):
+            obs, info = env.reset(seed=int(rng.integers(0, 1_000_000_000)))
+            terminal_reward = info.get("_terminal_reward", None)
+            if info.get("_terminated_in_reset"):
+                if terminal_reward is not None and terminal_reward > 0:
+                    wins += 1
+                continue
+            h = policy.initial_hidden(1, device=device)
+            done = False
+            while not done:
+                obs_t = torch.from_numpy(obs["observation"]).to(device).unsqueeze(0)
+                mask_t = torch.from_numpy(obs["action_mask"]).to(device).unsqueeze(0)
+                done_prev = torch.zeros(1, device=device)
+                action, h = policy.act_stateful(obs_t, mask_t, h, done_prev)
+                obs, reward, terminated, truncated, info = env.step(int(action.item()))
+                done = terminated or truncated
+                if done and reward > 0:
+                    wins += 1
+        results[name] = wins / n_episodes
+
+    return results

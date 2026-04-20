@@ -728,6 +728,54 @@ def make_frozen_policy_opponent(policy, device: str = "cpu") -> OpponentFn:
     return fn
 
 
+class _FrozenRecurrentOpponent:
+    """Stateful callable wrapping a RecurrentActorCritic for opponent play.
+
+    One instance per env-episode — hidden state is reset per episode via
+    the factory (a new instance is created each time env.reset samples
+    this opponent). Do NOT share a single instance across envs: their
+    hidden states would clobber each other.
+    """
+
+    def __init__(self, policy, device: str = "cpu") -> None:
+        self.policy = policy
+        self.device = device
+        self._h = None  # lazy-init on first call once we know batch=1
+
+    def __call__(
+        self, obs: np.ndarray, mask: np.ndarray, rng: np.random.Generator
+    ) -> int:
+        import torch
+
+        obs_t = torch.from_numpy(obs).to(self.device).unsqueeze(0)
+        mask_t = torch.from_numpy(mask).to(self.device).unsqueeze(0)
+        if self._h is None:
+            self._h = self.policy.initial_hidden(1, device=self.device)
+        # Opponent is called only on its own turns inside one episode, so
+        # there's no "previous step ended episode" event to signal here.
+        done_prev = torch.zeros(1, device=self.device)
+        action, new_h = self.policy.act_stateful(obs_t, mask_t, self._h, done_prev)
+        self._h = new_h
+        return int(action.item())
+
+
+def make_frozen_recurrent_opponent_factory(policy, device: str = "cpu") -> Callable:
+    """Returns a FACTORY that produces a fresh stateful opponent per env-episode.
+
+    `OpponentPool` stores the factory as if it were an opponent fn; the
+    SingleAgentBuckshotEnv detects the `_is_factory` marker on reset and
+    calls it to get an independent instance. This avoids hidden-state
+    collisions between parallel envs in SyncVectorEnv that happen to
+    sample the same recurrent snapshot.
+    """
+
+    def factory() -> _FrozenRecurrentOpponent:
+        return _FrozenRecurrentOpponent(policy, device=device)
+
+    factory._is_factory = True  # type: ignore[attr-defined]
+    return factory
+
+
 class OpponentPool:
     """Sampling pool for self-play league.
 

@@ -156,7 +156,14 @@ class SingleAgentBuckshotEnv(gym.Env):
             else:
                 self._agent_pid_this_ep = self.agent_pid
 
-            self._opp_name, self._opp_fn = self.pool.sample(self._opp_rng)
+            self._opp_name, _opp_sampled = self.pool.sample(self._opp_rng)
+            # Stateful (recurrent) opponents register as factories: instantiate
+            # a fresh callable per-episode so its hidden state doesn't leak
+            # across episodes, and so parallel envs don't share state.
+            if getattr(_opp_sampled, "_is_factory", False):
+                self._opp_fn = _opp_sampled()
+            else:
+                self._opp_fn = _opp_sampled
 
             if self.low_hp_prob > 0.0 and self._opp_rng.random() < self.low_hp_prob:
                 # Keep engine-assigned max_hp (opp still has a normal max); only
