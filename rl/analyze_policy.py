@@ -527,6 +527,9 @@ def main() -> int:
     rows = probe_policy(policy, SCENARIOS, device=a.device)
     md = render_markdown(rows)
     out = a.out or os.path.join(os.path.dirname(a.checkpoint) or ".", "analysis.md")
+    out_dir = os.path.dirname(out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(out, "w") as f:
         f.write(md)
     # JSONL of raw rows for programmatic comparison
