@@ -880,3 +880,142 @@ the high-side of the seed distribution.
    transfer FF-E10's strong-vs-strong play into the recurrent policy.
 3. **Optional E12c — E11a 3-seed replication.** Only if a reviewer
    challenges the asymmetric seed comparison. Same compute as E12a.
+
+---
+
+## E12b — BEER auxiliary loss (chamber-composition regression)
+
+**Hypothesis:** the honest-obs GRU has to *infer* remaining live/blank
+counts from the public event counters, and the plateau against
+`strong_baseline` at ~0.60 suggests it's not doing so well enough to
+recognize high-EV BEER/SHOOT states. Forcing the trunk to predict the
+true (n_live, n_blank) via an auxiliary MSE loss should provide a dense
+learning signal that shapes the GRU's internal state and frees the
+policy head to focus on decision-making, not estimation.
+
+### Implementation
+
+- `RecurrentActorCritic` gains an optional 2-dim linear head reading from
+  the GRU hidden state (`aux_dim=2`). Constructed only when requested,
+  so old checkpoints load unchanged under `strict=True`.
+- `forward_sequence(return_aux=True)` returns per-timestep aux
+  predictions. Single-step path is unchanged (aux is only used during
+  PPO updates, where we replay the whole T-length minibatch).
+- `SingleAgentBuckshotEnv.step/reset` emit the true chamber composition
+  in every info dict as `n_live`/`n_blank`. `SyncVectorEnv` aggregates
+  them into per-env arrays automatically.
+- `ppo_recurrent.py` captures the aux target at every rollout step,
+  alongside `obs_buf`, and adds `aux_coef * MSE(aux_pred, aux_target)`
+  to the PPO minibatch loss. CLI flags: `--aux-chamber --aux-coef 0.05`.
+
+### Run config
+
+Identical to E11b/E12a otherwise:
+- seed 6, 3M steps, envs=32, rollout=128, hidden=128, honest_obs=True
+- scenario_replay_prob=0.30, cosine LR, gamma=0.995
+- `--aux-chamber --aux-coef 0.05`
+
+Wall-clock: ~90 min on 1×H100 (same as E11b/E12a).
+
+### Training dynamics
+
+The aux head learned cleanly. Aux MSE trajectory:
+- u1:  0.99 (cold start, essentially random)
+- u10: 0.25
+- u50: 0.09
+- u200: 0.066
+- second-half mean: 0.060, range 0.031–0.100
+
+Converged within ~200 updates and stayed at ~0.06 for the remaining
+500+. Chamber counts are in [0, 4] for live/blank, so MSE 0.06 ≈
+±0.24 shells RMS error — the trunk is tracking composition within ¼ of
+a shell on average, effectively perfect for the game-relevant decisions.
+
+Policy/value losses, entropy, and KL behaved normally — no evidence
+that the aux gradient perturbed PPO's dynamics.
+
+### Evaluation (500 eps/opponent, post-fix rule-based opponents, seed 20260420)
+
+| opp | E12b s6 | E12a 3-seed mean ± stdev | E11b (re-eval) |
+|---|---|---|---|
+| random | 0.934 ± 0.011 | 0.913 ± 0.006 | 0.922 |
+| aggressive | 0.794 ± 0.018 | 0.799 ± 0.018 | 0.822 |
+| conservative | 0.706 ± 0.020 | 0.696 ± 0.012 | 0.730 |
+| strong_baseline | **0.594 ± 0.022** | 0.594 ± 0.023 | 0.598 |
+| mean of 4 | **0.757** | 0.751 | 0.768 |
+
+Binomial stderr at n=500 is ±0.013–0.022 per opponent.
+
+### Interpretation: clean negative result
+
+**The aux loss did not move win rates.** E12b's mean across 4 opponents
+is 0.757 vs E12a's 3-seed mean of 0.751 — a 0.6pp difference, well
+inside the ±2% per-seed noise band. Per-opponent:
+- vs `random`: +2.1pp (within 2σ)
+- vs `aggressive`: -0.5pp (indistinguishable)
+- vs `conservative`: +1.0pp (indistinguishable)
+- vs `strong_baseline`: +0.0pp (**identical to 3 decimals**)
+
+The single-seed variance we observed in E12a (strong-baseline range
+0.578–0.620 across s3/s4/s5) dwarfs any E12b signal. E12b falls
+squarely inside that distribution.
+
+**Key finding: the aux head learned its task essentially perfectly, and
+it still didn't help.** This rules out "the aux target was too hard" or
+"the gradient didn't flow" — those would have shown up as stagnant aux
+loss. The aux loss was 0.06 by update 200 and stayed there.
+
+### Why this is informative (even though the hypothesis failed)
+
+1. **The GRU was already tracking chamber composition.** If
+   (n_live, n_blank) were genuinely absent from the trunk's internal
+   state before adding the aux head, adding it would have changed the
+   representation and the policy should have shifted. It didn't. That
+   suggests the policy/value gradients *already* push the GRU to encode
+   counts well enough to play — adding explicit pressure on those
+   specific quantities is redundant.
+
+2. **The strong_baseline ceiling is NOT about chamber estimation.**
+   With both E12a's 3-seed mean and E12b at 0.594 against
+   `strong_baseline`, we now have 4 independent 3M-step honest-obs
+   policies that all cap at 0.58–0.62. Either:
+   - `strong_baseline` plays near-optimally given its information (most
+     likely — it has access to the hack obs, which reveals public
+     counters),
+   - or the gap is in decision-making (item sequencing, timing of
+     HANDSAW+HANDCUFF, exploiting BEER states) rather than in state
+     estimation.
+
+3. **Auxiliary-loss representation shaping needs a harder target.**
+   (n_live, n_blank) is too easy: it can be derived deterministically
+   from the public counters already in the obs (initial declaration +
+   shots_fired + beer_ejected). Future aux-loss experiments should pick
+   a target that actually requires Bayesian inference — e.g. the
+   posterior probability that the next chambered shell is live after
+   INVERTER use, or the expected value of shooting opponent given
+   current inventory.
+
+### Decision
+
+**Drop E12b from the league; revert to the E11b/E12a honest-obs config
+as the baseline.** The aux_chamber flag stays in the codebase (costs
+nothing, may be useful for diagnostic probing), but the next experiment
+should move on from representation shaping to opponent / training-
+distribution changes.
+
+### Next steps (updated)
+
+1. **E13 — league fusion (promoted to next).** Pin FF-E10 as a
+   permanent opponent. Gives the missing E11b-vs-E10 number and, more
+   importantly, forces the recurrent policy to face a qualitatively
+   different (feedforward, hack-obs) opponent that may push it past the
+   `strong_baseline` plateau. Cheap (~90 min / H100) and well-scoped.
+2. **E14 — harder aux target (deferred).** Only revisit auxiliary loss
+   after E13 if the plateau persists. Candidate targets: p(next shell
+   live | obs), which requires the GRU to maintain a posterior through
+   the round rather than just count. Less trivially derivable from
+   counters — forces real inference.
+3. **E15 — structural changes (speculative).** If league fusion also
+   fails to break the 0.60 ceiling, consider: larger hidden size,
+   attention over past events, or distributional value head. These are
+   expensive and should wait until simpler interventions are exhausted.
