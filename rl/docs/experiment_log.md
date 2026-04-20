@@ -1249,3 +1249,110 @@ This is a meaningful reframing. The E14 / E15 / E16 priorities shift:
    scaling on honest obs is fine but unlikely to close the full 5pp
    information gap regardless. E16 answers the more pressing question
    first.
+
+
+## E16 — hack-obs GRU + FF-E10 pinned (seed 8): FF-E10 pinning is a net negative
+
+**Goal.** Two things at once:
+1. Reproduce the hack-obs recurrent result on a fresh seed (E11a was a
+   single-seed point).
+2. Test whether adding FF-E10 as a permanent league opponent lifts the
+   hack-obs GRU above E11a's 0.646 vs `strong_baseline` (same recipe
+   that E13 tried on honest obs and failed).
+
+**Config.** `ppo_recurrent`, hack obs, `--seed 8`, 3M steps, hidden=128,
+embed=128, num_envs=32, num_steps=128, num_minibatches=4,
+update_epochs=4, `--scenario-replay-prob 0.30`,
+`--extra-opponent-ckpts rl_runs/E10_escape_collapse/policy_final.pt`,
+no `--aux-chamber`. Trained on 1× H100 (GPU 1), ~40 min wall.
+
+### Results (500 eps/opp)
+
+| Opponent | E16 (hack + FF-pin, seed 8) | E11a (hack, no FF-pin, seed 7) | E13 (honest + FF-pin, seed 7) | FF-E10 (hack FF) |
+|---|---|---|---|---|
+| random | 0.922 ± 0.012 | 0.936 ± 0.011 | 0.936 ± 0.011 | 0.930 ± 0.011 |
+| aggressive | 0.792 ± 0.018 | 0.810 ± 0.018 | 0.800 ± 0.018 | 0.796 ± 0.018 |
+| conservative | 0.742 ± 0.020 | 0.760 ± 0.019 | 0.680 ± 0.021 | 0.744 ± 0.020 |
+| **strong_baseline** | **0.604 ± 0.022** | **0.646 ± 0.021** | **0.594 ± 0.022** | **0.654 ± 0.021** |
+| ff_e10 | 0.482 ± 0.022 | 0.550 ± 0.022 | 0.492 ± 0.022 | — |
+
+### Three headline findings
+
+1. **FF-E10 pinning HURTS hack-obs GRU vs `strong_baseline`.** E16 lands
+   at 0.604 — 4.2pp **below** E11a's 0.646 (1.4σ). The expected
+   "better league ⇒ stronger policy" effect is absent; the actual
+   effect is a regression.
+
+2. **FF-E10 pinning fails to teach the GRU to beat FF-E10.** E16 goes
+   0.482 head-to-head vs the pinned opponent — statistically
+   indistinguishable from 50%, and **below** E11a's 0.550 against the
+   same FF-E10 checkpoint (E11a never trained against it). Training
+   *against* FF-E10 made the GRU *less* able to beat it.
+
+3. **With FF-E10 pinned, hack vs honest obs becomes
+   indistinguishable.** E16 (hack) and E13 (honest) converge to nearly
+   identical scores across the board — 0.604 vs 0.594 on
+   `strong_baseline` (0.3σ), 0.482 vs 0.492 on `ff_e10` (0.3σ). The
+   5.2pp observation-honesty gap we measured between E11a and E13
+   (1174–1180) **collapses** once both are trained against FF-E10.
+
+### What this means
+
+The most economical interpretation: **FF-E10 pinning distorts the
+training distribution toward a near-Nash response to FF-E10**, and
+that response is a compromise that (a) underperforms vs weaker
+rule-based opponents and (b) doesn't improve the head-to-head against
+FF-E10 itself. The collapse of the obs-honesty gap is the giveaway:
+once both policies have to spend capacity drawing against FF-E10,
+whatever extra info hack obs provides stops mattering for the
+rule-based opponents too.
+
+The E11a hack-obs advantage over honest-obs (≈5pp) was **specific to
+the rule-based-only league**. It reflected hack-obs's ability to
+exploit the rule-based opponents' predictable plans. As soon as a
+stronger, less-exploitable opponent (FF-E10) enters the pool, the
+GRU stops exploiting and starts drawing — and exploitation is where
+the obs-honesty asymmetry lived.
+
+### The broader lesson
+
+We now have three independent experiments (E12b aux loss, E13 honest
++ FF-pin, E16 hack + FF-pin) that all landed at ~0.60 vs
+`strong_baseline` despite very different interventions. The only
+configuration that beats 0.60 is **hack obs + rule-based-only
+league** (E11a 0.646, FF-E10 0.654). This is a strong pattern:
+
+> The 0.65 ceiling is the **exploit-ceiling against rule-based
+> opponents when observations expose n_live**. Any intervention that
+> forces the policy to be robust (honest obs, FF-E10 pin, aux loss)
+> trades exploit for robustness and lands at 0.60.
+
+To push past 0.65 we probably need one of:
+- A richer diverse league (many different archetypes, none pinned)
+  so the policy can still exploit by conditioning on opponent type.
+- Opponent modeling (explicit context-inference about who we're
+  playing) — either architectural or via auxiliary identification
+  losses.
+- A larger / deeper recurrent network so representational capacity
+  stops being the constraint. We have H100s; 3M-step 128-hidden is
+  currently leaving compute on the table.
+
+### Decisions for the next batch
+
+1. **Drop FF-E10 pinning as a league strategy.** Two independent runs
+   (E13 and E16) show it regresses the policy. Unless we find a
+   different way to make it helpful (curriculum? reduced weight in
+   the pool?), don't spend more compute on this axis.
+2. **E18 — scale the E11a recipe.** Hack obs, rule-based-only league,
+   fresh seed, **bigger model** (hidden=256, embed=256) and **longer
+   training** (10M steps). This is the cheapest way to test whether
+   0.65 is a learning-capacity ceiling or a structural one.
+3. **E17 — honest-vs-honest evaluation** remains on the queue but
+   demoted below E18. Until we've tried to push the hack-obs ceiling,
+   debating the honest-obs 0.60 plateau is premature — it may be a
+   reflection of the 0.65 hack ceiling rather than a separate issue.
+4. **Optional: opponent-embedding experiment (E19).** Add a
+   per-episode learned opponent embedding (or auxiliary opponent-ID
+   prediction) so the policy can condition its strategy on who it's
+   playing. This is the principled way to recover the exploitation
+   capacity FF-E10-pinning destroyed.
