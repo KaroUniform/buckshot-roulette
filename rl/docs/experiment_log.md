@@ -1563,3 +1563,40 @@ Early trajectory (first 17 updates, ~70k steps):
   pathologies so far.
 
 Post-mortem to be appended once training + eval complete (~2h).
+
+## Async vector envs (infra PR, 2026-04-21)
+
+Drafted during E19's wait. Four-commit chunk into PR #3 that swaps
+`gymnasium.vector.SyncVectorEnv` → `AsyncVectorEnv(context="spawn",
+shared_memory=True)` for `ppo_recurrent.train`. Full design in
+`rl/docs/async_env_optimization_plan.md`. Commits:
+
+- `0c03ef1` — `OpponentPool.manifest()` + `build_pool_from_manifest()`
+- `d2856bd` — `SingleAgentBuckshotEnv.sync_pool(manifest)`
+- `08e8cba` — AsyncVectorEnv swap + broadcast plumbing + `close(terminate=True)`
+
+Key design decisions worth flagging for later:
+- Workers spawn with a rule-only seed pool (not the full pool). The
+  parent's full pool may contain CUDA-resident `nn.Module` extras;
+  those cannot cross the spawn pipe. Instead the parent broadcasts
+  `pool.manifest()` via `envs.call("sync_pool", …)` right after
+  construction, which workers reload from disk on CPU.
+- League snapshots (every `snapshot_every_updates`) annotate the
+  factory with `.ckpt_path = <newly-saved .pt file>` so
+  `pool.manifest()` can round-trip them. The save happens BEFORE
+  `pool.add` so workers see the file the moment the broadcast
+  arrives.
+- `threading.Lock` on `OpponentPool` now has `__getstate__`/
+  `__setstate__` to survive pickling through the spawn pipe.
+
+Local stability smoke (mac, 11 cores, 4 envs × 128 steps × 19
+updates, snapshot_every=5): pool grew 4 → 7 across 4 snapshot
+broadcasts, no pipe deadlocks, clean shutdown. Return trajectory
+−0.6 → +0.08 (sanity — still learning normally).
+
+Throughput measurement pending on beeline. Mac micro-benchmarks
+under-represent the async win: fast single-core Python makes IPC
+overhead dominate. Beeline's shared box has slower per-core
+stepping, so 32 parallel workers should amortize better — expected
+4–6× rollout speedup, H100 utilization from <10% to 30–50%. Actual
+numbers go in the E20 header.
