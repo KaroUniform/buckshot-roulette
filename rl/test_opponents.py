@@ -336,9 +336,10 @@ def test_probe_adrenaline_two_step_steals_saw():
     print("ok  probe_adrenaline_two_step_steals_saw")
 
 
-def test_probe_handcuff_then_lethal_known_live():
-    """Opp at 2HP, next known LIVE, has CUFF + SAW → cuff first, then saw,
-    then shoot. Safe lethal sequence."""
+def test_probe_no_cuff_when_saw_kills_opp_outright():
+    """Opp at 2HP, next known LIVE, has CUFF + SAW. Saw + shot kills opp on
+    the spot, so cuffing is wasted (opp dies before any turn-skip can fire).
+    Expect USE_HANDSAW directly, no cuff."""
     e = _setup_engine_for_current_player(seed=9)
     pid = e.state.current_player
     me = e.state.players[pid]
@@ -351,9 +352,52 @@ def test_probe_handcuff_then_lethal_known_live():
     me.inventory[int(Item.HANDSAW)] = 1
     opp.inventory = _empty_inv()
     a = _decide(e, np.random.default_rng(9))
+    _assert(a == int(Action.USE_HANDSAW),
+            f"saw+shot is one-shot lethal so cuff is wasted; expected USE_HANDSAW, "
+            f"got {Action(a).name}")
+    print("ok  probe_no_cuff_when_saw_kills_opp_outright")
+
+
+def test_probe_no_cuff_when_direct_shot_kills_opp():
+    """Opp at 1HP, next known LIVE, has CUFF, multiple shells available.
+    Direct shot kills opp, so cuffing first wastes the cuff. Expect SHOOT_OPPONENT."""
+    e = _setup_engine_for_current_player(seed=21)
+    pid = e.state.current_player
+    me = e.state.players[pid]
+    opp = e.state.players[1 - pid]
+    opp.hp = 1
+    e.state.shells = [True, False, True]  # n_shells=3 to defeat the old n_shells>=2 gate
+    e.state.known_shells[pid][0] = True
+    me.inventory = _empty_inv()
+    me.inventory[int(Item.HANDCUFF)] = 1
+    opp.inventory = _empty_inv()
+    a = _decide(e, np.random.default_rng(21))
+    _assert(a == int(Action.SHOOT_OPPONENT),
+            f"direct shot kills 1HP opp; cuff would be wasted. Expected SHOOT_OPPONENT, "
+            f"got {Action(a).name}")
+    print("ok  probe_no_cuff_when_direct_shot_kills_opp")
+
+
+def test_probe_cuff_useful_when_saw_advances_kill():
+    """Opp at 3HP, next known LIVE, has CUFF + SAW. Saw deals 2 dmg → opp at 1HP
+    (alive), so we'll need a follow-up shot. Cuff IS useful here: it skips opp's
+    retaliation turn so we can finish them. Expect USE_HANDCUFF first."""
+    e = _setup_engine_for_current_player(seed=22)
+    pid = e.state.current_player
+    me = e.state.players[pid]
+    opp = e.state.players[1 - pid]
+    opp.hp = 3
+    e.state.shells = [True, False]  # n_shells=2 satisfies the cuff guard
+    e.state.known_shells[pid][0] = True
+    me.inventory = _empty_inv()
+    me.inventory[int(Item.HANDCUFF)] = 1
+    me.inventory[int(Item.HANDSAW)] = 1
+    opp.inventory = _empty_inv()
+    a = _decide(e, np.random.default_rng(22))
     _assert(a == int(Action.USE_HANDCUFF),
-            f"expected USE_HANDCUFF first in the lethal chain, got {Action(a).name}")
-    print("ok  probe_handcuff_then_lethal_known_live")
+            f"saw advances kill (opp survives at 1HP) so cuff buys us a free follow-up "
+            f"turn; expected USE_HANDCUFF, got {Action(a).name}")
+    print("ok  probe_cuff_useful_when_saw_advances_kill")
 
 
 def test_probe_opp_cuffed_aggressive_lethal():
@@ -604,7 +648,9 @@ def main() -> int:
         test_probe_no_pills_with_alternatives,
         test_probe_inverter_known_blank_to_live,
         test_probe_adrenaline_two_step_steals_saw,
-        test_probe_handcuff_then_lethal_known_live,
+        test_probe_no_cuff_when_saw_kills_opp_outright,
+        test_probe_no_cuff_when_direct_shot_kills_opp,
+        test_probe_cuff_useful_when_saw_advances_kill,
         test_probe_opp_cuffed_aggressive_lethal,
         test_probe_known_live_lethal_one_shot_skips_cuff_at_full_hp,
         # win-rate sanity

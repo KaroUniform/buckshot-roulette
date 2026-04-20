@@ -297,19 +297,28 @@ def _strong_baseline_decision(
         )
         if want_saw_first:
             return int(Action.PICK_HANDSAW)
-        # Cuff: free lethal setup — if we know next is live and saw+shoot would
-        # kill (or damage_mult already ≥ opp_hp), cuff helps us re-shoot next
-        # turn without retaliation. Only worth stealing if opp isn't already cuffed.
-        can_lethal_now = slot0_known and slot0_live and _can_one_shot_opp(obs, with_saw=False)
-        can_lethal_with_saw = (
+        # Cuff: only worth stealing+using when there will actually BE a follow-up
+        # turn for opp to skip. If the next shot already kills opp (directly or via
+        # our saw), the cuff is consumed but never fires — opp dies before their
+        # next turn. So only steal cuff when the kill is at least 2 shots out.
+        kill_in_one_now = slot0_known and slot0_live and _can_one_shot_opp(obs, with_saw=False)
+        kill_in_one_with_saw = (
             slot0_known and slot0_live and dmg_mult < 2
             and _can_one_shot_opp(obs, with_saw=True)
             and (_me_has(obs, Item.HANDSAW) or mask[int(Action.PICK_HANDSAW)])
         )
+        # Saw advances kill but doesn't finish (opp_hp 3 or 4, saw → 1 or 2):
+        # cuff IS useful here because we need a second shot to finish.
+        kill_in_two_with_saw = (
+            slot0_known and slot0_live and dmg_mult < 2
+            and (_me_has(obs, Item.HANDSAW) or mask[int(Action.PICK_HANDSAW)])
+            and opp_hp - 2 >= 1 and opp_hp - 2 <= 2
+        )
         if (
             mask[int(Action.PICK_HANDCUFF)]
             and not opp_cuffed
-            and (can_lethal_now or can_lethal_with_saw)
+            and kill_in_two_with_saw
+            and not (kill_in_one_now or kill_in_one_with_saw)
         ):
             return int(Action.PICK_HANDCUFF)
         # Smoke when hurt
@@ -347,35 +356,21 @@ def _strong_baseline_decision(
 
     # ============================================================
     # LETHAL-NOW: next shell known LIVE and we can immediately kill.
-    # Priority: cuff (if we have both cuff + the current lethal setup)
-    # → saw (only if not wasted) → shoot.
+    # Priority: saw (if it's the lethal piece) → shoot.
+    # NOTE: Do NOT cuff before a kill — opp dies on the shot and the cuff's
+    # skip_next_turn never fires. Cuff is only worth using when opp will
+    # survive long enough to have a turn skipped (handled in (b') below).
     # ============================================================
     if slot0_known and slot0_live:
         # (a) Already primed with saw (or raw dmg) to kill
         if _can_one_shot_opp(obs, with_saw=False) and mask[int(Action.SHOOT_OPPONENT)]:
-            # Cuff first only when we have a clear use for the extra tempo
-            # (n_shells>=2 so another live attempt may exist). Skip if opp
-            # already cuffed or we're at full HP (no urgency to milk extra dmg).
-            if (
-                mask[int(Action.USE_HANDCUFF)]
-                and not opp_cuffed
-                and n_shells >= 2
-            ):
-                return int(Action.USE_HANDCUFF)
             return int(Action.SHOOT_OPPONENT)
-        # (b) Saw makes this lethal — top priority
+        # (b) Saw makes this lethal — top priority. No cuff: opp dies on the shot.
         if (
             mask[int(Action.USE_HANDSAW)]
             and dmg_mult < 2
             and _can_one_shot_opp(obs, with_saw=True)
         ):
-            # Cuff first if we have both
-            if (
-                mask[int(Action.USE_HANDCUFF)]
-                and not opp_cuffed
-                and n_shells >= 2
-            ):
-                return int(Action.USE_HANDCUFF)
             return int(Action.USE_HANDSAW)
         # (b') Saw advances the kill (opp_hp 3 or 4 → drops to 1 or 2 after
         # 2-dmg shot). NOT wasted — sets up a one-shot next turn. Skip when
