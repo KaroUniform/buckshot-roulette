@@ -191,12 +191,14 @@ def _can_one_shot_opp(obs: np.ndarray, with_saw: bool) -> bool:
     """Can we deal enough damage this shot to kill the opponent?
 
     Considers current damage_mult (already set if we used saw earlier this
-    turn) plus an optional pending saw we haven't yet applied.
+    turn) plus an optional pending saw we haven't yet applied. The engine
+    caps damage_mult at 2 (handsaw is set-to-2, not multiply-by-2), so
+    `with_saw` promotes to max(current, 2) rather than doubling.
     """
     opp_hp = int(round(float(obs[_O_OPP_HP])))
     dmg_mult = int(round(float(obs[_O_DAMAGE_MULT])))
     if with_saw:
-        dmg_mult *= 2
+        dmg_mult = max(dmg_mult, 2)
     return dmg_mult >= opp_hp
 
 
