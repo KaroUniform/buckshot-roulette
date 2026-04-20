@@ -418,3 +418,69 @@ states. With ~15% of rollouts starting in s*, the policy will sample
 alternative actions often enough that advantages become non-degenerate.
 No shaping for E9 — pure scenario replay on terminal ±1, with γ=0.999.
 
+
+---
+
+## E9 — scenario replay (15%): visit-forcing without shaping
+
+| | |
+|---|---|
+| Date | 2026-04-20 |
+| Run dir | `rl_runs/E9_scenario_replay/` |
+| Hypothesis | Predicted fix from E7 post-mortem. Force 15% of resets into "agent at HP=1, known-live next, single defensive item {BEER/SMOKE/INVERTER}" states. With USE_BEER / USE_INVERTER sampled in these states at ε-rate, PPO can compute a real advantage and pull the policy away from SHOOT_OPPONENT. No shaping, γ=0.999, terminal ±1 only. |
+| Setup | 3M steps; lr=1e-3 (default anneal); ent_coef=0.01 (annealed from 0.1 at u<100); hidden=256; γ=0.999; `--scenario-replay-prob 0.15`; league pool with strong_baseline. ~25 min on 1× H100 GPU 1. |
+| Headline | WR vs baselines: random 0.93, aggressive 0.76, conservative 0.77. Return50 stabilized around +0.1-+0.25 but noisy (shaping removed). |
+| **Outcome** | **Survival blindspot UNCHANGED.** Behavioral probe shows SHOOT_OPPONENT p=0.999 at 1HP+BEER (V=−0.72), SHOOT_OPPONENT p=0.999 at 1HP+INVERTER (V=−0.69). Critic correctly values the state as losing; actor cannot escape its commitment. |
+
+### Diagnosis: actor entropy collapse, not visit failure
+
+The scenario injection worked mechanically (11/11 tests green,
+including injection verification). But the metrics show the actor
+hasn't been moving for most of training:
+
+| Update | ent | approx_kl | clipfrac |
+|---|---|---|---|
+| 1 | 1.00 | 8.1e-3 | 0.15 |
+| 100 | 0.26 | 5.2e-3 | 0.05 |
+| 500 | 0.14 | 1.3e-3 | 0.02 |
+| 1000 | 0.14 | 3.8e-4 | 0.00 |
+| 1400 | 0.15 | 3.0e-5 | **0.00** |
+| 1463 | 0.16 | 6.8e-9 | **0.00** |
+
+After u100 the entropy flatlines at 0.14-0.16; by u1000 `clipfrac=0`
+and `kl<1e-3`, meaning the PPO update ratio is ~1.0 almost
+everywhere. By u1400 KL is 1e-5 — the actor is frozen. The LR
+schedule has decayed to 6e-7 as well, contributing.
+
+So scenario replay *did* force the state visit. But at the injected
+state, the actor samples SHOOT_OPPONENT with p=0.999, and that
+distribution is reinforced whenever the action-under-injection
+happens to lead to a positive rollout return (which it can — opponent
+retaliation is stochastic). USE_BEER is sampled with p=0.001 —
+statistically ~1 of every 1000 injection rollouts — yielding an
+advantage estimate dominated by noise. Since `clipfrac=0`, the policy
+gradient ratio ≈ 1 and the clip doesn't activate to pull the policy
+toward USE_BEER even when its advantage is positive.
+
+This is **not** the visit-distribution failure of E7. Visits happen.
+But the *entropy floor* is too low: p(USE_BEER|s*) = 0.001 means a
+15%·0.001 = 1.5e-4 rollout rate in the target scenario. Even across 3M
+timesteps (~300k episodes), that's only ~50 rollouts of USE_BEER in s*
+— far from enough to overcome the policy's prior commitment.
+
+### Next step → E10: escape entropy collapse
+
+Two orthogonal fixes to try in E10:
+
+1. **Higher entropy floor**: raise `ent_coef` from 0.01 to 0.05 (or
+   0.1) and remove the anneal schedule. At ent_coef=0.05 with
+   current logits, sampling diversity in collapsed states roughly
+   doubles per bit of entropy gained.
+2. **Disable LR anneal** (or set cosine to floor at 1e-4 instead of
+   ~0): the current near-zero LR means gradients can't move the actor
+   even when they're non-zero.
+
+Also bump `--scenario-replay-prob` from 0.15 to 0.30. Combined with
+higher entropy, USE_BEER sampling rate in s* should go from 1.5e-4 to
+roughly 30% · 5% = 1.5e-2 — a 100× increase in alternative-action
+rollouts, which should give PPO enough advantage signal to move.

@@ -458,6 +458,13 @@ def parse_args() -> PPOConfig:
              "appears in on-policy rollouts. Reward signal stays terminal ±1; we only "
              "fix the *visit distribution*. Recommended start: 0.15.",
     )
+    p.add_argument(
+        "--no-anneal-lr",
+        action="store_true",
+        help="Disable cosine LR anneal-to-zero; keep LR at --lr for the whole run. "
+             "Useful when the actor has collapsed into a local minimum and needs a "
+             "non-vanishing gradient to escape (see E10 post-mortem of E9).",
+    )
     a = p.parse_args()
     cfg = PPOConfig(
         total_timesteps=a.total_timesteps,
@@ -479,6 +486,7 @@ def parse_args() -> PPOConfig:
         heal_bonus=a.heal_bonus,
         round_survive_bonus=a.round_survive_bonus,
         scenario_replay_prob=a.scenario_replay_prob,
+        anneal_lr=not a.no_anneal_lr,
     )
     if a.run_name:
         cfg.run_name = a.run_name
