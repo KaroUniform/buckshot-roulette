@@ -467,20 +467,11 @@ def _strong_baseline_decision(
         # damage. Skip only if blank-self-shot would convert to a critical
         # tempo we'd lose (almost never).
         if mask[int(Action.USE_INVERTER)]:
-            # (a) Direct: invert → shoot for guaranteed kill
-            if _can_one_shot_opp(obs, with_saw=False):
-                return int(Action.USE_INVERTER)
-            # (b) Invert + saw + shoot = lethal kill
-            if (
-                _me_has(obs, Item.HANDSAW)
-                and dmg_mult < 2
-                and _can_one_shot_opp(obs, with_saw=True)
-            ):
-                return int(Action.USE_INVERTER)
-            # (c) General-purpose offensive use: invert blank→live, shoot opp.
-            # Trade a "free self-shot" for guaranteed dmg_mult damage to opp.
-            # Worth it whenever opp has HP that we can chip down — i.e.,
-            # always while opp is alive. This is what champion does.
+            # Invert blank→live, then shoot opp for guaranteed dmg_mult damage.
+            # Always worth trading the "free self-shot" here: lethal kills
+            # (with/without saw) and general chip-damage all fall under the
+            # same decision, so the earlier lethality-specific branches were
+            # unreachable duplicates.
             return int(Action.USE_INVERTER)
         # If opp can be lethal'd next turn and we can cuff now, stall.
         # (Note: slot 0 will reveal as blank after self-shot; subsequent

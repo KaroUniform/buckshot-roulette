@@ -180,7 +180,11 @@ class SimpleBuckshotState(pyspiel.State):
         # for each view. See also `_state_tensor` which mirrors this.
         del player
         if self.is_chance_node():
-            return f"chance:hps={self._hps},to_deal={self._n_live_total + self._n_blank_total}"
+            return (
+                f"chance:hps={self._hps},"
+                f"to_deal={self._n_live_total + self._n_blank_total},"
+                f"next={self._next_player_after_chance}"
+            )
         n = len(self._shells)
         n_live = sum(1 for x in self._shells if x)
         n_blank = n - n_live
