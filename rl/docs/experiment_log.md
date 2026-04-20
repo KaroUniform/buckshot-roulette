@@ -484,3 +484,76 @@ Also bump `--scenario-replay-prob` from 0.15 to 0.30. Combined with
 higher entropy, USE_BEER sampling rate in s* should go from 1.5e-4 to
 roughly 30% · 5% = 1.5e-2 — a 100× increase in alternative-action
 rollouts, which should give PPO enough advantage signal to move.
+
+---
+
+## E10 — escape entropy collapse (ent=0.05, no-anneal, replay=0.30)
+
+| | |
+|---|---|
+| Date | 2026-04-20 |
+| Run dir | `rl_runs/E10_escape_collapse/` |
+| Hypothesis | E9 diagnosed actor collapse, not visit failure. Three orthogonal fixes: higher `ent_coef` (0.01→0.05), disable LR anneal (so gradients stay effective), bump `scenario_replay_prob` (0.15→0.30). Target: p(defensive_action \| s*) ≫ 1e-3 so PPO can accumulate advantage signal. |
+| Setup | 3M steps; lr=3e-4 flat (`--no-anneal-lr`); ent_coef=0.05; scenario_replay=0.30; hidden=256; γ=0.999; league pool with strong_baseline. ~25 min on 1× H100 GPU 1. |
+| Headline | WR vs baselines: random 0.94, aggressive 0.76, conservative 0.71. Return50 ≈ −0.1 to +0.1 (more exploration → slightly worse vs easy baselines, expected tradeoff). |
+| **Outcome** | **Partial success.** The 1HP+INVERTER blindspot **solved**: policy now picks USE_INVERTER with p=0.937 (E9: 0.001). The 1HP+BEER case improved from p=0.001 to p=0.381 but SHOOT_OPPONENT still wins the argmax at 0.619. |
+
+### Training dynamics — collapse fixed
+
+| Update | ent | approx_kl | clipfrac | lr |
+|---|---|---|---|---|
+| 100 | 0.40 | 1.1e-2 | 0.08 | 3e-4 |
+| 500 | 0.32 | 4.3e-3 | 0.04 | 3e-4 |
+| 1000 | 0.29 | 2.2e-3 | 0.03 | 3e-4 |
+| 1400 | 0.30 | 2.2e-3 | 0.03 | 3e-4 |
+| 1463 | 0.30 | 1.4e-3 | 0.02 | 3e-4 |
+
+Contrast with E9: ent stays around 0.3 (not 0.14), clipfrac stays
+around 2-3% (not 0%), LR stays at 3e-4 (not 6e-7), and KL stays in
+1e-3 range (not 1e-8). The actor is actively updating through the end
+of training. *This* is the regime we wanted.
+
+### Behavioral probe A/B (E8 → E9 → E10)
+
+| Scenario | E8 | E9 | E10 | |
+|---|---|---|---|---|
+| `beer_when_certain_death_next_shot` | SHOOT 1.00 | SHOOT 0.999 | **SHOOT 0.62 / BEER 0.38** | partial |
+| `inverter_save_from_known_live` | SHOOT 1.00 | SHOOT 0.999 | **INVERTER 0.94** | ✓ fixed |
+| `smoke_when_low_hp` | SMOKE 1.00 | SMOKE 1.00 | SMOKE 1.00 | kept |
+| `cuff_saw_combo` | CUFF 0.70 | CUFF ~0.7 | CUFF 1.00 | kept/improved |
+| `handsaw_lethal` | ✓ | ✓ | ✓ | kept |
+
+### Why BEER is stickier than INVERTER
+
+Both actions have the same "mask is legal" status and similar raw
+state features. Candidate explanations:
+
+1. **Asymmetric downstream reward**: USE_INVERTER flips slot0 from
+   LIVE to BLANK, so the agent's *very next* action is SHOOT_SELF on
+   a now-blank shell → free turn, guaranteed survival, and possibly a
+   kill attempt with the next live. USE_BEER ejects slot0 entirely,
+   passes turn to opp. Opp acts next. From the actor's credit
+   perspective, INVERTER is a higher-immediate-value move in s*, so
+   the advantage is larger and easier to learn.
+2. **Pre-training bias**: early in training SHOOT_OPPONENT beats
+   everything against random-play (opp usually just dies), so all
+   "shoot vs item" bandits start SHOOT-favored. Breaking that prior
+   for BEER takes more updates than for INVERTER because INVERTER has
+   cleaner downstream credit.
+
+### Next steps
+
+Priority: confirm E10 is a stable regime (not a lucky seed). Two
+low-risk follow-ups:
+
+- **E11a**: same config, seed=2, 3M steps — reproducibility check.
+- **E11b**: same config, **6M steps** — extrapolate whether BEER
+  flips with more updates at the same entropy/LR. If yes, that's the
+  cheapest path forward.
+
+Alternative if BEER still doesn't flip at 6M: slightly bias the
+scenario replay toward BEER states (e.g. sample {BEER: 0.5, INVERTER:
+0.25, SMOKE: 0.25} instead of uniform 1/3), or run a targeted
+evaluation of what the agent actually *does* in live BEER scenarios
+(are we measuring policy output correctly, or is the action being
+chosen differently under env stochasticity?).
