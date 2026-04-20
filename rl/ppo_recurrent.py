@@ -46,6 +46,7 @@ from rl.opponents import (
 )
 from rl.policy import ActorCritic, RecurrentActorCritic
 from rl.ppo import record_terminal_returns, make_env_fn
+from rl.single_agent_env import N_OPPONENT_IDS, OPPONENT_ID_OTHER
 
 
 @dataclass
@@ -84,6 +85,12 @@ class RecurrentPPOConfig:
     # recurrent trunk to actually track hidden chamber state.
     aux_chamber: bool = False
     aux_coef: float = 0.05
+    # E19 opponent embedding: if n_opponents > 0, the policy gets an
+    # nn.Embedding(n_opponents, embed_dim) whose output is added to
+    # obs_embed(obs) before the GRU. Rollout passes each env's opponent
+    # id into the embedding so the trunk can condition on opponent
+    # identity. Set to N_OPPONENT_IDS (5) to match the env's ID table.
+    n_opponents: int = 0
     save_dir: str = "rl_runs"
     run_name: str = field(default_factory=lambda: f"ppo_recurrent_{int(time.time())}")
 
@@ -115,6 +122,24 @@ def _aux_from_infos(infos: dict, num_envs: int, device: torch.device) -> torch.T
     n_live = np.asarray(infos.get("n_live", np.zeros(num_envs)), dtype=np.float32)
     n_blank = np.asarray(infos.get("n_blank", np.zeros(num_envs)), dtype=np.float32)
     return torch.from_numpy(np.stack([n_live, n_blank], axis=-1)).to(device)
+
+
+def _opp_ids_from_infos(
+    infos: dict, num_envs: int, device: torch.device, default_id: int = OPPONENT_ID_OTHER
+) -> torch.Tensor:
+    """Extract per-env opponent_id (int64) from a vector-env info dict.
+
+    The env emits `opponent_id` on every reset/step path (see
+    single_agent_env.py). We fall back to `default_id` only for the
+    (extremely rare) case where SyncVectorEnv's info aggregation drops
+    the key — e.g. if a future refactor of gymnasium changes info-dict
+    merging. Returns a (num_envs,) long tensor.
+    """
+    ids = np.asarray(
+        infos.get("opponent_id", np.full(num_envs, default_id, dtype=np.int64)),
+        dtype=np.int64,
+    )
+    return torch.from_numpy(ids).to(device)
 
 
 def train(
@@ -210,7 +235,11 @@ def train(
     obs_dim = envs.single_observation_space["observation"].shape[0]
     aux_dim = 2 if cfg.aux_chamber else 0
     policy = RecurrentActorCritic(
-        obs_dim, NUM_ACTIONS, hidden=cfg.hidden, aux_dim=aux_dim
+        obs_dim,
+        NUM_ACTIONS,
+        hidden=cfg.hidden,
+        aux_dim=aux_dim,
+        n_opponents=cfg.n_opponents,
     ).to(device)
     optimizer = optim.Adam(policy.parameters(), lr=cfg.learning_rate, eps=1e-5)
 
@@ -240,6 +269,13 @@ def train(
         torch.zeros((cfg.num_steps, cfg.num_envs, 2), device=device)
         if cfg.aux_chamber else None
     )
+    # Opponent-id buffer: per-step opponent id, consumed by the embedding.
+    # Allocated only when the embedding is enabled; otherwise left as None
+    # so the rollout/update paths skip the extra work.
+    opp_id_buf = (
+        torch.zeros((cfg.num_steps, cfg.num_envs), dtype=torch.long, device=device)
+        if cfg.n_opponents > 0 else None
+    )
 
     obs_dict, reset_infos = envs.reset(seed=cfg.seed)
     next_obs = torch.from_numpy(obs_dict["observation"]).to(device)
@@ -250,6 +286,10 @@ def train(
     next_aux = None
     if cfg.aux_chamber:
         next_aux = _aux_from_infos(reset_infos, cfg.num_envs, device)
+    # opponent_id for the current obs: captured from env info; initially from reset
+    next_opp_id = None
+    if cfg.n_opponents > 0:
+        next_opp_id = _opp_ids_from_infos(reset_infos, cfg.num_envs, device)
 
     num_updates = cfg.total_timesteps // cfg.batch_size
     global_step = 0
@@ -281,6 +321,8 @@ def train(
                 hidden_buf[step] = next_hidden
                 if cfg.aux_chamber and aux_target_buf is not None:
                     aux_target_buf[step] = next_aux
+                if cfg.n_opponents > 0 and opp_id_buf is not None:
+                    opp_id_buf[step] = next_opp_id
 
                 with torch.no_grad():
                     (
@@ -290,7 +332,11 @@ def train(
                         value,
                         next_hidden,
                     ) = policy.get_action_and_value(
-                        next_obs, next_mask, next_hidden, next_done
+                        next_obs,
+                        next_mask,
+                        next_hidden,
+                        next_done,
+                        opp_ids=next_opp_id,
                     )
                     values_buf[step] = value
                 actions_buf[step] = action
@@ -308,6 +354,8 @@ def train(
                 next_mask = torch.from_numpy(obs_dict["action_mask"]).to(device)
                 if cfg.aux_chamber:
                     next_aux = _aux_from_infos(infos, cfg.num_envs, device)
+                if cfg.n_opponents > 0:
+                    next_opp_id = _opp_ids_from_infos(infos, cfg.num_envs, device)
 
                 n_terminations_total += record_terminal_returns(
                     ep_returns_window, done, reward, ep_running_return
@@ -316,7 +364,11 @@ def train(
             # ---- GAE ----
             with torch.no_grad():
                 _, _, _, next_value, _ = policy.get_action_and_value(
-                    next_obs, next_mask, next_hidden, next_done
+                    next_obs,
+                    next_mask,
+                    next_hidden,
+                    next_done,
+                    opp_ids=next_opp_id,
                 )
                 advantages = torch.zeros_like(rewards_buf)
                 last_gae = 0.0
@@ -363,14 +415,23 @@ def train(
                     # h at t=0 for these envs (stored before first step)
                     mb_h0 = hidden_buf[0, :, mb_envs_t].contiguous()
 
+                    mb_opp_ids = (
+                        opp_id_buf[:, mb_envs_t]
+                        if cfg.n_opponents > 0 and opp_id_buf is not None
+                        else None
+                    )
                     if cfg.aux_chamber and aux_target_buf is not None:
                         logits_seq, values_seq, aux_pred = policy.forward_sequence(
-                            mb_obs, mb_h0, mb_dones, return_aux=True
+                            mb_obs,
+                            mb_h0,
+                            mb_dones,
+                            return_aux=True,
+                            opp_ids_seq=mb_opp_ids,
                         )
                         mb_aux_target = aux_target_buf[:, mb_envs_t]
                     else:
                         logits_seq, values_seq = policy.forward_sequence(
-                            mb_obs, mb_h0, mb_dones
+                            mb_obs, mb_h0, mb_dones, opp_ids_seq=mb_opp_ids
                         )
                         aux_pred = None
                         mb_aux_target = None
@@ -553,6 +614,22 @@ def parse_args() -> RecurrentPPOConfig:
              "--aux-chamber). 0.05 picked to be large enough to shape the "
              "trunk but small enough that policy/value remain primary.",
     )
+    p.add_argument(
+        "--opp-embed",
+        action="store_true",
+        help="Enable E19 opponent embedding (defaults n_opponents to "
+             f"{N_OPPONENT_IDS} matching single_agent_env's ID table). "
+             "Ignored if --n-opponents is also passed.",
+    )
+    p.add_argument(
+        "--n-opponents",
+        type=int,
+        default=0,
+        help="Number of opponent slots for the E19 embedding layer. 0 "
+             "disables (default). Using --opp-embed sets a sensible default "
+             f"({N_OPPONENT_IDS}) that matches the env's ID map. If both are "
+             "passed, --n-opponents wins.",
+    )
     a = p.parse_args()
     cfg = RecurrentPPOConfig(
         total_timesteps=a.total_timesteps,
@@ -580,6 +657,9 @@ def parse_args() -> RecurrentPPOConfig:
         anneal_lr=not a.no_anneal_lr,
         aux_chamber=a.aux_chamber,
         aux_coef=a.aux_coef,
+        n_opponents=a.n_opponents if a.n_opponents > 0 else (
+            N_OPPONENT_IDS if a.opp_embed else 0
+        ),
     )
     if a.run_name:
         cfg.run_name = a.run_name
