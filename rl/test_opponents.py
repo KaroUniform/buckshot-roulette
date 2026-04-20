@@ -400,6 +400,57 @@ def test_probe_cuff_useful_when_saw_advances_kill():
     print("ok  probe_cuff_useful_when_saw_advances_kill")
 
 
+def test_probe_no_adrenaline_for_inverter_when_saw_only_on_opp():
+    """KNOWN BLANK + opp at 2HP, opp has INVERTER + HANDSAW, we have ADRENALINE
+    but no own saw. Adrenaline can steal at most ONE item. If we steal INVERTER,
+    we can't ALSO grab opp's saw on the same turn — so the post-invert shot
+    deals only 1 dmg, leaving opp at 1HP and burning the free blank turn for
+    nothing. Expect SHOOT_SELF (safe blank, free turn) instead."""
+    e = _setup_engine_for_current_player(seed=23)
+    pid = e.state.current_player
+    me = e.state.players[pid]
+    opp = e.state.players[1 - pid]
+    opp.hp = 2
+    me.hp = me.max_hp  # remove the will_die_if_live escape hatch
+    e.state.shells = [False, True]  # slot0 known BLANK
+    e.state.known_shells[pid][0] = False
+    me.inventory = _empty_inv()
+    me.inventory[int(Item.ADRENALINE)] = 1
+    # Crucially: NO own handsaw.
+    opp.inventory = _empty_inv()
+    opp.inventory[int(Item.INVERTER)] = 1
+    opp.inventory[int(Item.HANDSAW)] = 1
+    a = _decide(e, np.random.default_rng(23))
+    _assert(a == int(Action.SHOOT_SELF),
+            f"opp's saw is unreachable (adrenaline already needed for inverter); "
+            f"expected SHOOT_SELF for safe free turn, got {Action(a).name}")
+    print("ok  probe_no_adrenaline_for_inverter_when_saw_only_on_opp")
+
+
+def test_probe_adrenaline_for_inverter_when_we_own_saw():
+    """KNOWN BLANK + opp at 2HP, opp has INVERTER, we own HANDSAW + ADRENALINE.
+    Adrenaline → steal INVERTER → flip slot0 blank→live → use OUR saw → shoot
+    opp for 2 dmg = lethal. Expect USE_ADRENALINE."""
+    e = _setup_engine_for_current_player(seed=24)
+    pid = e.state.current_player
+    me = e.state.players[pid]
+    opp = e.state.players[1 - pid]
+    opp.hp = 2
+    me.hp = me.max_hp
+    e.state.shells = [False, True]
+    e.state.known_shells[pid][0] = False
+    me.inventory = _empty_inv()
+    me.inventory[int(Item.ADRENALINE)] = 1
+    me.inventory[int(Item.HANDSAW)] = 1  # WE have the saw
+    opp.inventory = _empty_inv()
+    opp.inventory[int(Item.INVERTER)] = 1
+    a = _decide(e, np.random.default_rng(24))
+    _assert(a == int(Action.USE_ADRENALINE),
+            f"we own the saw, so adrenaline+inverter+saw+shoot kills opp; "
+            f"expected USE_ADRENALINE, got {Action(a).name}")
+    print("ok  probe_adrenaline_for_inverter_when_we_own_saw")
+
+
 def test_probe_opp_cuffed_aggressive_lethal():
     """Opp already cuffed, opp at 2HP, known LIVE, has SAW → USE_HANDSAW
     (free attack since opp can't retaliate; saw makes the lethal one-shot)."""
@@ -651,6 +702,8 @@ def main() -> int:
         test_probe_no_cuff_when_saw_kills_opp_outright,
         test_probe_no_cuff_when_direct_shot_kills_opp,
         test_probe_cuff_useful_when_saw_advances_kill,
+        test_probe_no_adrenaline_for_inverter_when_saw_only_on_opp,
+        test_probe_adrenaline_for_inverter_when_we_own_saw,
         test_probe_opp_cuffed_aggressive_lethal,
         test_probe_known_live_lethal_one_shot_skips_cuff_at_full_hp,
         # win-rate sanity

@@ -493,10 +493,14 @@ def _strong_baseline_decision(
             and (_me_has(obs, Item.HANDSAW) or dmg_mult >= 2)
         ):
             return int(Action.USE_HANDCUFF)
-        # ADRENALINE: steal opp's inverter to convert this blank into a kill
+        # ADRENALINE: steal opp's inverter to convert this blank into a kill.
+        # Saw justification only counts if WE own a saw — adrenaline was already
+        # spent stealing the inverter, so we can't also steal opp's saw on the
+        # same turn. Without our own saw, the post-invert shot deals 1 damage,
+        # not 2 — and we'd burn both adrenaline and the free blank self-shot.
         if mask[int(Action.USE_ADRENALINE)] and _opp_has(obs, Item.INVERTER):
             if _can_one_shot_opp(obs, with_saw=False) or (
-                (_me_has(obs, Item.HANDSAW) or _opp_has(obs, Item.HANDSAW))
+                _me_has(obs, Item.HANDSAW)
                 and dmg_mult < 2
                 and _can_one_shot_opp(obs, with_saw=True)
             ):
