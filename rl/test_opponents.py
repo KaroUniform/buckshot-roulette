@@ -496,6 +496,68 @@ def test_strong_baseline_in_named_opponents_registry():
     print("ok  strong_baseline_in_named_opponents_registry")
 
 
+def test_rule_based_opponents_work_under_honest_obs():
+    """Rule-based baselines read obs scalars at fixed hack-layout offsets; if
+    the env is in honest_obs mode, they must transparently see a collapsed
+    hack view. Verify each baseline picks a legal action across many honest
+    obs samples from a real engine.
+    """
+    from rl.engine import BuckshotEngine
+    from rl.opponents import (
+        aggressive_opponent,
+        conservative_opponent,
+        strong_baseline_opponent,
+    )
+    rng = np.random.default_rng(0)
+    for opp_fn in (aggressive_opponent, conservative_opponent, strong_baseline_opponent):
+        e = BuckshotEngine(seed=1, honest_obs=True)
+        e.reset()
+        steps = 0
+        while not e.state.done and steps < 100:
+            pid = e.state.current_player
+            obs = e.observation(pid)
+            _assert(obs.shape[0] == 52, f"honest obs should be 52-dim, got {obs.shape[0]}")
+            mask = e.legal_actions()
+            action = opp_fn(obs, mask, rng)
+            _assert(mask[action], f"{opp_fn.__name__} picked illegal action {action}")
+            e.step(int(action))
+            steps += 1
+    print("ok  rule_based_opponents_work_under_honest_obs")
+
+
+def test_as_hack_obs_preserves_invariants():
+    """_as_hack_obs(honest_obs) should produce a 47-dim vector whose derived
+    n_live/n_blank equal the true remaining chamber counts under no-inverter
+    play, and whose inventory/known_shells blocks match the engine's hack-mode
+    output for the same state.
+    """
+    from rl.engine import BuckshotEngine
+    from rl.opponents import _as_hack_obs
+
+    e_honest = BuckshotEngine(seed=42, honest_obs=True)
+    s_honest = e_honest.reset()
+    obs_honest = e_honest.observation(s_honest.current_player)
+    collapsed = _as_hack_obs(obs_honest)
+    _assert(collapsed.shape[0] == 47, f"collapsed should be 47-dim, got {collapsed.shape[0]}")
+    n_live_true = sum(1 for x in s_honest.shells if x)
+    n_blank_true = len(s_honest.shells) - n_live_true
+    _assert(abs(float(collapsed[5]) - n_live_true) < 1e-6,
+            f"derived n_live={collapsed[5]} != true {n_live_true}")
+    _assert(abs(float(collapsed[6]) - n_blank_true) < 1e-6,
+            f"derived n_blank={collapsed[6]} != true {n_blank_true}")
+    # Hack-obs from the same engine state should match our collapsed view on
+    # every slot (inventory block, known_shells block, damage_mult, cuffs, etc).
+    e_hack = BuckshotEngine(seed=42)
+    s_hack = e_hack.reset()
+    obs_hack = e_hack.observation(s_hack.current_player)
+    _assert(obs_hack.shape[0] == 47, "hack obs should be 47-dim")
+    # Same seed → identical chamber and inventories.
+    _assert(np.allclose(collapsed, obs_hack, atol=1e-6),
+            f"collapsed honest obs must match hack obs for same state; max diff "
+            f"= {np.max(np.abs(collapsed - obs_hack))}")
+    print("ok  as_hack_obs_preserves_invariants")
+
+
 # ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
@@ -525,6 +587,9 @@ def main() -> int:
         test_strong_baseline_beats_conservative,
         # registry
         test_strong_baseline_in_named_opponents_registry,
+        # honest-obs compatibility
+        test_rule_based_opponents_work_under_honest_obs,
+        test_as_hack_obs_preserves_invariants,
     ]
     failures = 0
     for t in tests:
