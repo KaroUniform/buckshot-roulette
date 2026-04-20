@@ -814,6 +814,19 @@ class OpponentPool:
         self.weights: dict[str, float] = {name: 1.0 for name in self.opponents}
         self._lock = threading.Lock()
 
+    def __getstate__(self) -> dict:
+        # threading.Lock is not picklable; AsyncVectorEnv(context="spawn")
+        # pickles the pool through the worker setup closure. Drop the lock
+        # on serialize and re-create it in the child process below.
+        state = self.__dict__.copy()
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        import threading
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
+
     def add(self, name: str, fn: OpponentFn, weight: float = 1.0) -> None:
         with self._lock:
             self.opponents[name] = fn

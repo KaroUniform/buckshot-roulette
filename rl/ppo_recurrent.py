@@ -191,11 +191,14 @@ def train(
                     for p in net.parameters():
                         p.requires_grad_(False)
                     label = os.path.splitext(os.path.basename(path))[0]
-                    pool.add(
-                        f"extra:{label}",
-                        make_frozen_recurrent_opponent_factory(net, device=cfg.device),
-                        weight=1.0,
+                    extra_factory = make_frozen_recurrent_opponent_factory(
+                        net, device=cfg.device
                     )
+                    # Annotate with ckpt_path so pool.manifest() can emit a
+                    # "ckpt:<path>" entry that AsyncVectorEnv workers can
+                    # reload on CPU via sync_pool(manifest).
+                    extra_factory.ckpt_path = os.path.abspath(path)  # type: ignore[attr-defined]
+                    pool.add(f"extra:{label}", extra_factory, weight=1.0)
                     print(f"[train] added RECURRENT extra opponent {label} from {path}")
                 else:
                     obs_dim = state["body.0.weight"].shape[1]
@@ -206,19 +209,25 @@ def train(
                     for p in net.parameters():
                         p.requires_grad_(False)
                     label = os.path.splitext(os.path.basename(path))[0]
-                    pool.add(
-                        f"extra:{label}",
-                        make_frozen_policy_opponent(net, device=cfg.device),
-                        weight=1.0,
-                    )
+                    ff_factory = make_frozen_policy_opponent(net, device=cfg.device)
+                    ff_factory.ckpt_path = os.path.abspath(path)  # type: ignore[attr-defined]
+                    pool.add(f"extra:{label}", ff_factory, weight=1.0)
                     print(f"[train] added FEEDFORWARD extra opponent {label} from {path}")
             except Exception as exc:
                 print(f"[train] WARNING: could not load extra opponent {path}: {exc}")
 
-    envs = gym.vector.SyncVectorEnv(
+    # AsyncVectorEnv runs one worker process per env (context="spawn" so
+    # CUDA in the parent doesn't poison workers). The workers get a
+    # rule-only seed pool at spawn — we avoid pickling CUDA extras or
+    # the threading lock through the spawn pipe — and then the parent
+    # broadcasts the full pool (including recurrent-checkpoint extras)
+    # via envs.call("sync_pool", pool.manifest()). shared_memory halves
+    # the per-step obs-dict round-trip vs repeated pickling.
+    worker_seed_pool = OpponentPool(dict(NAMED_OPPONENTS))
+    envs = gym.vector.AsyncVectorEnv(
         [
             make_env_fn(
-                pool,
+                worker_seed_pool,
                 cfg.seed + i,
                 cfg.hp_shaping,
                 cfg.low_hp_prob,
@@ -229,8 +238,14 @@ def train(
                 cfg.honest_obs,
             )
             for i in range(cfg.num_envs)
-        ]
+        ],
+        context="spawn",
+        shared_memory=True,
     )
+    # Propagate any extras (FF/recurrent ckpts loaded above) into workers.
+    # Safe to skip if no extras — the rule-only seed pool matches the
+    # full pool manifest already. Always calling keeps the code uniform.
+    envs.call("sync_pool", pool.manifest())
 
     obs_dim = envs.single_observation_space["observation"].shape[0]
     aux_dim = 2 if cfg.aux_chamber else 0
@@ -490,17 +505,25 @@ def train(
                 for p in snap.parameters():
                     p.requires_grad_(False)
                 snap_name = f"snapshot_u{update}"
-                pool.add(
-                    snap_name,
-                    make_frozen_recurrent_opponent_factory(snap, device=cfg.device),
-                    weight=1.0,
-                )
                 ckpts_dir = os.path.join(run_dir, "checkpoints")
                 os.makedirs(ckpts_dir, exist_ok=True)
-                torch.save(snap.state_dict(), os.path.join(ckpts_dir, f"{snap_name}.pt"))
+                snap_ckpt_path = os.path.abspath(
+                    os.path.join(ckpts_dir, f"{snap_name}.pt")
+                )
+                # Save FIRST so workers that reload from manifest see the
+                # file on disk the moment they receive the broadcast.
+                torch.save(snap.state_dict(), snap_ckpt_path)
+                snap_factory = make_frozen_recurrent_opponent_factory(
+                    snap, device=cfg.device
+                )
+                snap_factory.ckpt_path = snap_ckpt_path  # type: ignore[attr-defined]
+                pool.add(snap_name, snap_factory, weight=1.0)
                 snap_names = [n for n in pool.opponents if n.startswith("snapshot_")]
                 while len(snap_names) > cfg.max_pool_snapshots:
                     pool.remove(snap_names.pop(0))
+                # Broadcast new pool to all worker envs so their next
+                # episode samples from the updated league.
+                envs.call("sync_pool", pool.manifest())
 
             # ---- Logging + eval ----
             recent_return = (
@@ -548,7 +571,9 @@ def train(
     finally:
         log_file.close()
         try:
-            envs.close()
+            # terminate=True forcibly SIGTERMs any worker stuck in step_wait
+            # if the parent dies mid-rollout (e.g. SIGINT during training).
+            envs.close(terminate=True)
         except Exception:
             pass
     ckpt = os.path.join(run_dir, "policy_final.pt")
