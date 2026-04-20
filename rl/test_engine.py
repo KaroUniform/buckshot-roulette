@@ -405,11 +405,14 @@ def test_handcuff_survives_beer_reload_mid_turn():
 
 
 def test_obs_size_matches_documented_layout():
+    from rl.engine import _OBS_MAX_SHELLS
     e = BuckshotEngine(seed=0)
     e.reset()
     obs = e.observation(0)
-    # 13 scalars + 9 own + 9 opp + max_shells live + max_shells blank
-    expected = 13 + 9 + 9 + e.shells_range[1] * 2
+    # 13 scalars + 9 own + 9 opp + _OBS_MAX_SHELLS live + _OBS_MAX_SHELLS blank.
+    # Obs width is decoupled from shells_range so checkpoints keep working
+    # when chamber sizes are tuned (see the _OBS_MAX_SHELLS definition).
+    expected = 13 + 9 + 9 + _OBS_MAX_SHELLS * 2
     _assert(obs.shape == (expected,), f"Obs size {obs.shape} != expected ({expected},)")
     print(f"ok  obs_size_matches_documented_layout (size={obs.shape[0]})")
 

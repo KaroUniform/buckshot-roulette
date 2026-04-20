@@ -38,6 +38,12 @@ from typing import Optional
 import numpy as np
 
 
+# Fixed observation-side cap on chamber size. Obs slots for known_live /
+# known_blank are always this wide so trained checkpoints keep working if
+# shells_range is tuned (see the 47-dim obs compat comment in observation()).
+_OBS_MAX_SHELLS = 8
+
+
 class Item(IntEnum):
     HANDSAW = 0
     BEER = 1
@@ -145,7 +151,7 @@ class BuckshotEngine:
         self,
         seed: Optional[int] = None,
         hp_range: tuple = (2, 4),
-        shells_range: tuple = (2, 8),
+        shells_range: tuple = (3, 6),
         items_per_round_choices: tuple = (1, 1, 1, 1, 2, 2, 2, 3, 3, 4),
     ) -> None:
         self.hp_range = hp_range
@@ -320,9 +326,9 @@ class BuckshotEngine:
         n_live = sum(1 for live in s.shells if live)
         n_blank = n - n_live
 
-        max_shells = self.shells_range[1]
-        # Per-shell knowledge: (known_live, known_blank) pair per shell slot.
-        # Shells beyond current count are zeroed.
+        # Obs width is fixed (not tied to shells_range) so trained checkpoints
+        # stay compatible when the chamber-size range is tuned.
+        max_shells = _OBS_MAX_SHELLS
         known_live = np.zeros(max_shells, dtype=np.float32)
         known_blank = np.zeros(max_shells, dtype=np.float32)
         for pos, is_live in s.known_shells[player_id].items():
