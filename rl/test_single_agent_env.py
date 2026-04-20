@@ -442,6 +442,44 @@ def test_e9_scenario_replay_episode_completes():
     print("ok  e9_scenario_replay_episode_completes")
 
 
+def test_sync_pool_replaces_opponent_pool():
+    """sync_pool() rebuilds the env's pool entirely from a manifest.
+
+    Simulates the AsyncVectorEnv parent broadcasting a new pool manifest
+    to workers between rollouts. The env's `self.pool` must be swapped
+    out wholesale, next reset() must sample from the new pool."""
+    from rl.single_agent_env import SingleAgentBuckshotEnv
+    from rl.opponents import NAMED_OPPONENTS, OpponentPool
+
+    # Start with just random
+    env = SingleAgentBuckshotEnv(
+        opponent_pool=OpponentPool({"random": NAMED_OPPONENTS["random"]})
+    )
+    _assert(len(env.pool) == 1, "initial pool should have 1 opponent")
+
+    # Broadcast a 3-opponent manifest
+    manifest = [
+        ("random", "rule:random", 1.0, "agnostic"),
+        ("aggressive", "rule:aggressive", 1.0, "agnostic"),
+        ("strong_baseline", "rule:strong_baseline", 2.0, "agnostic"),
+    ]
+    new_size = env.sync_pool(manifest)
+    _assert(new_size == 3, f"expected 3 opponents after sync, got {new_size}")
+    _assert(
+        set(env.pool.opponents.keys()) == {"random", "aggressive", "strong_baseline"},
+        f"pool keys after sync: {set(env.pool.opponents.keys())}",
+    )
+    _assert(env.pool.weights["strong_baseline"] == 2.0,
+            f"weight should have been restored, got {env.pool.weights['strong_baseline']}")
+
+    # reset() after sync_pool uses the new pool — no exception, opponent name
+    # is one of the new set.
+    env.reset(seed=123)
+    _assert(env._opp_name in {"random", "aggressive", "strong_baseline"},
+            f"unexpected opponent after sync_pool: {env._opp_name}")
+    print("ok  sync_pool_replaces_opponent_pool")
+
+
 def main() -> int:
     tests = [
         test_obs_and_action_spaces_present,
@@ -458,6 +496,7 @@ def main() -> int:
         test_e19_opponent_id_map_is_stable,
         test_e19_env_surfaces_opponent_id_in_info,
         test_e19_unknown_opponent_collapses_to_other,
+        test_sync_pool_replaces_opponent_pool,
     ]
     failures = 0
     for t in tests:

@@ -263,6 +263,30 @@ class SingleAgentBuckshotEnv(gym.Env):
             **self._chamber_info(),
         }
 
+    def sync_pool(
+        self,
+        manifest: list[tuple[str, str, float, str]],
+        device: str = "cpu",
+    ) -> int:
+        """Replace this env's opponent pool from a serializable manifest.
+
+        Broadcast by the AsyncVectorEnv parent via `envs.call("sync_pool", ...)`
+        whenever the training pool has gained or lost a snapshot. Workers
+        rebuild their pool entirely from disk — no mutable Python state is
+        shared across the pipe.
+
+        Returns the new pool size (length of `self.pool.opponents`) so the
+        parent can sanity-check the broadcast actually landed.
+
+        Called between rollouts — the env may be mid-episode, but the new
+        pool only takes effect at the NEXT `reset()` (where `pool.sample`
+        runs). So we just swap the reference and let the current episode
+        play out against the previously-sampled opponent.
+        """
+        from rl.opponents import build_pool_from_manifest
+        self.pool = build_pool_from_manifest(manifest, device=device)
+        return len(self.pool)
+
     def render(self) -> Optional[str]:
         s = self.engine.state
         if s is None:
