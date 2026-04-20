@@ -1594,9 +1594,34 @@ updates, snapshot_every=5): pool grew 4 → 7 across 4 snapshot
 broadcasts, no pipe deadlocks, clean shutdown. Return trajectory
 −0.6 → +0.08 (sanity — still learning normally).
 
-Throughput measurement pending on beeline. Mac micro-benchmarks
-under-represent the async win: fast single-core Python makes IPC
-overhead dominate. Beeline's shared box has slower per-core
-stepping, so 32 parallel workers should amortize better — expected
-4–6× rollout speedup, H100 utilization from <10% to 30–50%. Actual
-numbers go in the E20 header.
+**Throughput measurement on beeline (72 vCPU, CPU-only bench, pool
+= NAMED_OPPONENTS + 1 recurrent snapshot at 4× weight, 128-step
+warmup, random-legal actions as stand-in for the PPO actor):**
+
+| config              | env-step rate | wall-clock 8192 steps | speedup |
+|---------------------|---------------|-----------------------|---------|
+| Sync, 32 envs × 256 | 5 631 step/s  | 1.45 s                | 1.00×   |
+| Async, 32 envs × 256| 11 385 step/s | 0.72 s                | **2.02×** |
+| Sync, 64 envs × 128 | 5 754 step/s  | 1.42 s                | 1.00×   |
+| Async, 64 envs × 128| 14 766 step/s | 0.55 s                | **2.57×** |
+
+**Why 2× not 32×:**
+- Sync barrier: `AsyncVectorEnv.step()` waits for ALL workers to
+  finish each step, so throughput = `1/max(t_i)`, not
+  `sum(1/t_i)`. Heterogeneous opponent pool (random 50 µs vs
+  recurrent-snapshot 500–1000 µs per step) creates per-env
+  latency variance → slow workers gate the barrier.
+- IPC overhead: even with `shared_memory=True`, 32 pickle
+  round-trips per step eat 20–30% at the current per-step cost.
+- Shared beeline box: 72 vCPU visible but other users compete;
+  workers don't get 100% of a core.
+
+**Expected improvement on real training:** 2.5–3.5× end-to-end
+(vs 2× rollout-only) because the pool fills with recurrent
+snapshots → per-step variance drops → better parallelism.
+H100 forward pass pipelines with worker stepping. `num_envs=32`
+is kept for E20 as a drop-in; scaling to 48–64 would cost PPO
+hyper-retuning and wasn't judged worthwhile for a 20–30% further
+gain.
+
+**Verdict: 2× is enough for E20+. Adopted as-is.**
