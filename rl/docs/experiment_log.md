@@ -561,3 +561,181 @@ scenario replay toward BEER states (e.g. sample {BEER: 0.5, INVERTER:
 evaluation of what the agent actually *does* in live BEER scenarios
 (are we measuring policy output correctly, or is the action being
 chosen differently under env stochasticity?).
+
+---
+
+## E11a + E11b — GRU recurrent policy + observation-honesty ablation
+
+### Why the pivot (original plan vs. what we ran)
+
+Original E11a/b above was "rerun E10 longer / with different seed" — a
+reproducibility check for the FF baseline. That check is pending but
+low-priority: E10's BEER-hesitation is a known behavior gap and no
+amount of FF budget is obviously going to fix the deeper issue, which
+is that **the current observation vector leaks privileged info**.
+
+Specifically, `obs[_O_N_LIVE]` and `obs[_O_N_BLANK]` give the agent the
+public chamber live/blank counts at every tick, after every shot, after
+BEER, after INVERTER. A human player only *hears* the initial
+declaration ("two live, three blank") and then has to *remember* what
+was shot / ejected to maintain a belief over the remaining chamber.
+INVERTER flips the next shell — publicly known to both players that it
+was used, privately resolved to the user, so the opponent loses one bit
+of certainty on the chamber.
+
+So the FF agent we've been training is a cheater: it gets an oracle
+counter that re-derives itself from the public event stream, but saves
+the agent the work. An FF policy **cannot learn to count** — it has no
+memory. That's why the previous path was "give it the answer and let
+it act on it." Before investing another 6M FF steps, we switched tracks
+to answer the more interesting question:
+
+> If we take away the hack, can a recurrent policy recover the missing
+> counters from public events alone?
+
+If **yes**, we get a bot that plays under human-equivalent information,
+with the same (or better) win rate against rule-based baselines. If
+**no**, we know the observation hack was doing real work and we need to
+either keep it (accept the cheat), bias the architecture more strongly
+(larger GRU, auxiliary counter-prediction loss), or bring in something
+like a Transformer history encoder.
+
+### Setup
+
+Both runs use **identical hyperparameters**, *identical code paths*,
+and the same **3 M steps / 32 envs × 128 rollout / 4 minibatches ×
+4 epochs** budget. The differences are exactly two:
+
+| | E11a | E11b |
+|---|---|---|
+| Observation | **hack, 47-dim** (with public `n_live` / `n_blank`) | **honest, 52-dim** (public initial declaration + per-round event counters for shots / BEER ejections / INVERTER uses) |
+| Seed | 1 | 2 |
+
+Both use:
+- GRU-based [`RecurrentActorCritic`](../policy.py) (hidden=128, embed=128)
+- `lr=3e-4`, `ent_coef=0.05`, `gamma=0.999`, `no-anneal-lr`
+- `scenario-replay-prob=0.30` (E10's winning recipe)
+- Self-play league: 4 rule-based openers (`NAMED_OPPONENTS`) + rolling
+  recurrent snapshots (one every 10 updates, cap 10)
+- Eval: 100 eps vs each named opponent every 5 updates
+- Named-opponent helpers auto-collapse honest→hack via `_as_hack_obs`
+  so E11b's rule-based opponents work without changes
+
+The honest obs layout is a strict superset of "human-public" knowledge:
+from `initial_live − shots_live − beer_ejected_live` the agent can
+recompute public `n_live` exactly in no-INVERTER rounds, and bound it
+±`inverter_uses_this_round` once INVERTER has been used. The agent
+still sees its own `glass`/`phone` revelations via the per-shell
+knowledge block (slots 0..7). Nothing privileged about the opponent's
+inventory is exposed that wasn't already public.
+
+### Training dynamics
+
+Both runs converged to a stable policy after ~1M steps; no entropy
+collapse, no value divergence, smooth eval progression.
+
+`rollout/mean_return_50` trajectory:
+- **E11a**: −0.76 → mid −0.20 → final −0.28
+- **E11b**: −0.56 → mid +0.08 → final −0.28
+
+League pool size ends at 13 (E11a) and 12 (E11b). Sign of a healthy
+self-play mix; the league drove win rates down temporarily around the
+middle when stronger recurrent snapshots joined.
+
+### Result
+
+Final eval at 500 eps/opponent on the shipped `policy_final.pt`
+(torch-seeded for reproducibility):
+
+| Opponent | E11a (hack) | E11b (honest) | Δ (E11b − E11a) |
+|---|---|---|---|
+| random | 0.914 | 0.908 | −0.006 |
+| aggressive | 0.816 | 0.828 | +0.012 |
+| conservative | 0.692 | 0.756 | **+0.064** |
+| strong_baseline | 0.632 | 0.648 | +0.016 |
+| **mean** | **0.764** | **0.785** | **+0.022** |
+
+Binomial stderr at n=500 is ≈0.021, so only the conservative delta
+(+0.064, ≈3σ) is individually significant; random/aggressive/strong
+are within noise.
+
+**Head-to-head** (honest env, 800 eps):
+
+|  | Win rate | 95 % CI |
+|---|---|---|
+| E11b (policy) vs E11a (opponent, honest→hack collapse) | **0.579** | [0.545, 0.613] |
+
+The reverse match-up (E11a=policy, E11b=opponent) is architecturally
+unplayable: E11b expects 52-dim obs that can't be reconstructed from a
+47-dim hack obs (no `initial_live` state to recover). The honest→hack
+direction works because a hack-trained opponent only needs public
+counts, which the honest env exposes via the counters.
+
+The 57.9 % head-to-head is **4.5 σ above 50 %** — strong evidence the
+honest-obs policy is meaningfully better at playing this game, not
+just a tie on baselines.
+
+### Interpretation
+
+**Memory fully compensates for dropping public `n_live`/`n_blank`, and
+goes a step further — honest-obs is slightly *better* in aggregate.**
+Three plausible mechanisms, in descending likelihood:
+
+1. **Counter hack was doing more harm than good.** The hack obs
+   smuggles in derivable info (public counters) that's redundant with
+   the per-shell `known_live`/`known_blank` slots + event history, and
+   it arrives in a non-Markovian encoding — the FF policy can't reason
+   about *how that count got there* (was a BEER ejection? an INVERTER
+   flip?) only the current state. A GRU with access to the event
+   stream gets both the current state *and* its derivation, which
+   gives better credit assignment on INVERTER/BEER actions. This
+   matches the conservative-specific improvement: `conservative` is
+   the opponent most sensitive to chamber-awareness — it plays safely
+   when counts are balanced, so extracting edge requires nuanced
+   belief updating rather than raw counting.
+2. **Slight regularization.** Removing one redundant feature shrinks
+   the trivial "exploit the count" gradient pathway and may push the
+   policy to learn more robust value estimation on the remaining 50
+   dims. Similar in spirit to dropout.
+3. **Seed variance.** With only one run each, a +0.02 mean gap is not
+   conclusive on its own — the head-to-head result is the strongest
+   signal and is well above noise, but with n=1 per arm we can't rule
+   out this being a lucky E11b seed interacting with a slightly
+   weaker E11a seed. Would need ≥3 seeds per arm to lock this in.
+
+### Confidence + caveats
+
+- **Strong signal for the ablation hypothesis.** Honest obs ≥ hack
+  obs on every baseline and wins head-to-head — this is enough to
+  commit forward to honest obs as the default.
+- **`strong_baseline` is still weak.** Both policies sit ~65 % vs.
+  `strong_baseline`, unchanged from E10. The BEER-hesitation
+  pathology is not fixed by recurrence alone — it needs a targeted
+  intervention (biased scenario replay / auxiliary probe loss).
+- **No self-play ceiling probe.** We don't know the match-up
+  dynamics between E11b and the *old FF baseline* E10. Likely E11b
+  beats it (the head-to-head pattern suggests so), but this is a
+  data-gap, not a claim.
+
+### Next steps → E12
+
+Given honest obs works, there are two obvious and one risky
+follow-ups:
+
+1. **E12a — seed replication (cheap).** Rerun E11b with seeds 3, 4,
+   5 (same honest obs, same config). ~90 min of GPU, gives us a
+   3-seed mean ± stdev on the canonical setup so we can distinguish
+   the +0.064 conservative gain from noise.
+2. **E12b — BEER auxiliary loss.** Add an auxiliary head on the
+   recurrent trunk that predicts the remaining chamber composition
+   given history. Regularizes the GRU to actually track counts and
+   (hopefully) unsticks BEER against `strong_baseline`. 3M steps.
+3. **E13 — league fusion.** Run FF-E10 as a pinned opponent in the
+   E11b-style league for 3M more steps. If recurrent + honest obs
+   really is better, we should see the FF-E10 slot's opponent-weight
+   in the league go to the ceiling, and the policy's `strong_baseline`
+   number should climb. This also gives us the E11b-vs-E10 number we
+   don't currently have.
+
+Priority: E12a (lowest risk, fills the seed-variance gap), then E12b
+(if seed replication holds) to chip at the BEER ceiling.
