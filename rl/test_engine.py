@@ -204,6 +204,49 @@ def test_inverter_flips_next_shell():
     print("ok  inverter_flips_next_shell")
 
 
+def test_inverter_reveals_new_state_to_user():
+    # Without this, the user of the inverter gets less info than the opponent
+    # (who watches public n_live/n_blank counters flip). The player who
+    # physically handled the shell must know its new state.
+    e = BuckshotEngine(seed=101)
+    e.reset()
+    e.state.shells = [True, False, True]
+    user = e.state.current_player
+    e.state.known_shells[user].pop(0, None)
+    e.state.known_shells[1 - user].pop(0, None)
+    p = e.state.players[user]
+    p.inventory[int(Item.INVERTER)] = 1
+    e.step(int(Action.USE_INVERTER))
+    _assert(
+        e.state.known_shells[user].get(0) is False,
+        "Inverter user must learn the new slot-0 state (was live -> blank)",
+    )
+    _assert(
+        0 not in e.state.known_shells[1 - user],
+        "Inverter must NOT newly reveal slot 0 to the opponent",
+    )
+
+    # And when slot 0 was previously known, knowledge flips and stays with user.
+    e2 = BuckshotEngine(seed=102)
+    e2.reset()
+    e2.state.shells = [False, True, False]
+    user2 = e2.state.current_player
+    e2.state.known_shells[user2][0] = False
+    e2.state.known_shells[1 - user2][0] = False
+    p2 = e2.state.players[user2]
+    p2.inventory[int(Item.INVERTER)] = 1
+    e2.step(int(Action.USE_INVERTER))
+    _assert(
+        e2.state.known_shells[user2].get(0) is True,
+        "Inverter user's known state must match the flipped shell",
+    )
+    _assert(
+        e2.state.known_shells[1 - user2].get(0) is True,
+        "Opponent's prior knowledge of slot 0 must flip too",
+    )
+    print("ok  inverter_reveals_new_state_to_user")
+
+
 def test_glass_reveals_to_self_only():
     e = BuckshotEngine(seed=23)
     e.reset()
@@ -430,6 +473,7 @@ def main() -> int:
         test_live_self_shot_passes_turn_and_damages,
         test_handcuffs_skip_opponent_turn,
         test_inverter_flips_next_shell,
+        test_inverter_reveals_new_state_to_user,
         test_glass_reveals_to_self_only,
         test_adrenaline_two_step,
         test_pills_can_kill_and_end_game,

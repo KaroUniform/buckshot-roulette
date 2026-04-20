@@ -527,6 +527,11 @@ class BuckshotEngine:
             for k in range(2):
                 if 0 in s.known_shells[k]:
                     s.known_shells[k][0] = not s.known_shells[k][0]
+            # The player who used the inverter physically handled the shell and
+            # sees its new state. Without this, the n_live/n_blank counters leak
+            # the pre-flip state to any opponent with memory while the inverter-
+            # user's own policy input stays blind — an unfair asymmetry.
+            s.known_shells[s.current_player][0] = s.shells[0]
 
         # A pick action consumes adrenaline; regular item uses don't touch it.
         # We intentionally DO NOT flip a "used non-adrenaline item" flag any
