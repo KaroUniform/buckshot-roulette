@@ -1397,3 +1397,61 @@ model + longer run + eval overhead).
 Post-mortem will go below this stub. Intermediate eval every 40
 updates via `eval_every=10`, so the 100-ep training-eval trajectory
 will already hint at the answer before the 500-ep final.
+
+
+### Results (500 eps/opp, post-training)
+
+| Opponent | E18 (h=256, 10M, seed 9) | E11a (h=128, 3M, seed 7) | Δ |
+|---|---|---|---|
+| random | 0.938 ± 0.011 | 0.936 ± 0.011 | +0.002 |
+| aggressive | 0.828 ± 0.017 | 0.810 ± 0.018 | +0.018 |
+| conservative | 0.774 ± 0.019 | 0.760 ± 0.019 | +0.014 |
+| **strong_baseline** | **0.676 ± 0.021** | **0.646 ± 0.021** | **+0.030** |
+| ff_e10 | 0.550 ± 0.022 | 0.550 ± 0.022 | +0.000 |
+| e11a | 0.580 ± 0.022 | — | — |
+
+**Landed in the "modest positive" bracket** (0.66–0.68) predicted
+in the stub. Three points worth noting:
+
+1. **+3pp on `strong_baseline`** (1.0σ). E11a's 95% CI was
+   [0.605, 0.687]; E18's mean 0.676 sits near the top of that CI.
+   The gain is real across the full eval pool (weaker rule-based
+   opponents also moved +1–2pp) but not dramatic — the 0.65
+   plateau appears to extend to at least 0.68 with 4× compute.
+
+2. **E18 beats E11a head-to-head at 0.580 ± 0.022** (3.6σ above
+   50%). This is the cleanest "scaling worked" signal — the
+   gain is unambiguously more than sampling noise. E18 is
+   strictly a stronger player than E11a, even if that strength
+   shows up as only +3pp against one shared opponent.
+
+3. **No gain vs FF-E10** (0.550 both times). Scaling against a
+   rule-based league doesn't transfer to FF-E10 specifically.
+   The head-to-head vs FF-E10 looks like a different axis — the
+   same problem E16's post-mortem flagged (pinning FF-E10 hurts;
+   not pinning leaves us at 55%).
+
+### Decisions after E18
+
+- **The 0.65 ceiling is real but soft.** 4× compute bought +3pp
+  against `strong_baseline` and clear head-to-head superiority
+  over the previous-generation agent. The curve is not flat but
+  it's slow — pushing to ~0.72 with hidden=384 / 20M steps would
+  be another ~3× compute for probably another +2-3pp. Real but
+  expensive.
+- **E19 (opponent embedding) promoted to top priority.** The FF-E10
+  axis didn't move at all. That's not a scaling problem — it's
+  that a single GRU can't simultaneously exploit rule-based
+  openings and play cautiously against a trained opponent.
+  Giving the policy explicit per-episode context about *who*
+  it's playing is the principled fix, and it's where the
+  remaining win is.
+- **E20 (hidden=384, 20M steps) on deck but de-prioritized.**
+  Unless E19 surprises us, more of the same scaling is unlikely
+  to close the FF-E10 gap and offers only modest gains vs
+  rule-based. Keep it as a cheap sanity check if we need to
+  confirm the 4× → +3pp trend extrapolates.
+- **Saved checkpoint.** E18's final policy is now the new best
+  single-policy hack-obs baseline. Subsequent experiments
+  (E19, E20) should include it as an eval opponent so we can
+  track absolute scaling progress head-to-head.
