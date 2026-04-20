@@ -1455,3 +1455,86 @@ in the stub. Three points worth noting:
   single-policy hack-obs baseline. Subsequent experiments
   (E19, E20) should include it as an eval opponent so we can
   track absolute scaling progress head-to-head.
+
+
+## E19 — opponent embedding (design)
+
+**Motivation.** E18 showed that scaling hack-obs + rule-based league
+delivers +3pp on `strong_baseline` (0.676 vs E11a's 0.646) and a
+clean head-to-head win (0.58) but *zero* movement against FF-E10
+(stuck at 0.55). A single GRU is forced to average its strategy
+across opponents that reward opposite play styles: rule-based
+opponents reward aggressive exploitation, trained policies punish
+it. E19 tests whether explicit per-episode opponent context lets
+the policy specialize.
+
+**Minimum viable design.** Discrete opponent ID → small learnable
+embedding → concatenated with obs embedding before the GRU.
+
+- **ID table (5 slots, fixed):**
+  - 0: `random`
+  - 1: `aggressive`
+  - 2: `conservative`
+  - 3: `strong_baseline`
+  - 4: *any other* (catch-all: self-play snapshots, FF-E10,
+    future-added extras)
+
+  Rationale: the rule-based set is small, stable, and exactly the
+  axis where exploitation matters. Snapshots and FF-E10 all live
+  behind slot 4 because:
+  1. Snapshot identity shifts during training (pool.add(snapshot_k)
+     can happen any time), so per-snapshot IDs would create a
+     moving target the policy can't actually learn.
+  2. From the policy's POV, "snapshot k" and "snapshot k-5" play
+     almost the same game at this scale — they're all
+     near-self-play. Collapsing them is not much of a loss.
+  3. Keeping the table small (5) means the embedding learns
+     crisp per-archetype responses rather than sparse per-
+     snapshot noise.
+
+- **Env plumbing.** `SingleAgentBuckshotEnv` already stores
+  `self._opp_name` at reset. Add a name→ID lookup (module-level
+  constant `_OPPONENT_ID_MAP`) and stash `self._opp_id`. Include
+  it in every info dict return (`reset`, `step`, `_terminal_return`).
+
+- **Policy change.** `RecurrentActorCritic` gains an optional
+  `n_opponents: int` arg (default 0 → embedding disabled for
+  backward compat with existing E11a/E16/E18 checkpoints). If
+  enabled, an `nn.Embedding(n_opponents, embed_dim)` layer is
+  added; its output is *added* to `obs_embed(obs)` before the
+  GRU (addition rather than concat keeps `input_size=embed_dim`
+  so GRU shape is unchanged and backward compat is easier).
+
+- **PPO buffer.** A new `opp_id_buf[num_steps, num_envs]` int64
+  buffer captures per-step opponent ID from info. It slices
+  alongside obs in minibatches and feeds `forward_sequence(...,
+  opp_ids=...)`. `load_recurrent_policy` auto-detects
+  `n_opponents` from `state["opponent_embed.weight"].shape[0]`.
+
+- **Training knobs.** New CLI args: `--opp-embed` (bool flag),
+  `--n-opponents` (int, default 5).
+
+**Training config (E19 run).** Match E18 for apples-to-apples:
+hack obs, rule-based-only league, seed=10, hidden=256, 10M steps,
+`--opp-embed --n-opponents 5`. Eval at 500 eps/opp including vs
+E18, FF-E10, E11a.
+
+**Predictions.**
+- **Win:** E19 beats E18 by ≥3pp on `strong_baseline` AND flips
+  the FF-E10 head-to-head above 0.55. This is the target result.
+- **Half-win:** E19 matches E18 vs `strong_baseline` (≈0.68) but
+  moves FF-E10 to 0.55+. Tells us per-opponent specialization is
+  working but rule-based was already near-ceiling.
+- **Flat:** No movement on either axis. Either ID 4 is too coarse
+  (snapshots and FF-E10 need separate slots) or the bottleneck is
+  elsewhere entirely. Next step: per-snapshot IDs or opponent-ID
+  *inference* head (E20).
+- **Negative:** ID embedding destabilizes training. Unlikely given
+  the tiny parameter count, but documented as a possibility.
+
+**Implementation plan (incremental commits):**
+1. `opp_id_map` constant + env info plumbing + tests.
+2. `RecurrentActorCritic` opponent embedding + tests
+   (backward-compat checkpoint load included).
+3. PPO rollout buffer + training CLI flags + smoke test.
+4. Launch E19 run on beeline, eval, post-mortem appended here.
