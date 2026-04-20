@@ -19,7 +19,6 @@ import os
 import sys
 
 import numpy as np
-import torch
 
 from rl.analyze_policy import (
     SCENARIOS,
@@ -49,17 +48,6 @@ def _read_last_metric(run_dir: str, key: str):
     return last
 
 
-def _infer_obs_dim(checkpoint: str) -> int:
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    # body.0 is the first Linear; weight shape = [hidden, obs_dim]
-    return state["body.0.weight"].shape[1]
-
-
-def _infer_hidden(checkpoint: str) -> int:
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    return state["body.0.weight"].shape[0]
-
-
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("run_dir", help="Directory containing policy_final.pt and metrics.jsonl")
@@ -85,9 +73,7 @@ def main() -> int:
 
     # 2) Behavioral analysis on final policy
     print("\n[2/3] behavioral probe on final policy ...")
-    obs_dim = _infer_obs_dim(ckpt)
-    hidden = _infer_hidden(ckpt)
-    policy = load_policy(ckpt, obs_dim=obs_dim, hidden=hidden, device=a.device)
+    policy = load_policy(ckpt, device=a.device)
     rows = probe_policy(policy, SCENARIOS, device=a.device)
     md = render_analysis_md(rows)
     md_path = os.path.join(a.run_dir, "analysis.md")
