@@ -21,6 +21,30 @@ from rl.engine import NUM_ACTIONS, BuckshotEngine
 from rl.opponents import OpponentFn, OpponentPool, random_opponent
 
 
+# Discrete opponent-class IDs used by the E19 opponent-embedding policy.
+# 0..3 are the rule-based archetypes; 4 is a catch-all for self-play
+# snapshots and any extra frozen policies (FF-E10 etc.). Kept small and
+# fixed so the embedding learns crisp per-archetype responses rather
+# than chasing a moving per-snapshot target as the league grows.
+OPPONENT_ID_MAP = {
+    "random": 0,
+    "aggressive": 1,
+    "conservative": 2,
+    "strong_baseline": 3,
+}
+OPPONENT_ID_OTHER = 4
+N_OPPONENT_IDS = 5
+
+
+def opponent_name_to_id(name: str) -> int:
+    """Map an opponent pool name to its embedding slot.
+
+    Unknown names (self-play snapshots, extras) collapse to
+    OPPONENT_ID_OTHER.
+    """
+    return OPPONENT_ID_MAP.get(name, OPPONENT_ID_OTHER)
+
+
 class SingleAgentBuckshotEnv(gym.Env):
     """Gymnasium env. Agent plays against `opponent_fn`.
 
@@ -159,6 +183,7 @@ class SingleAgentBuckshotEnv(gym.Env):
                 self._agent_pid_this_ep = self.agent_pid
 
             self._opp_name, _opp_sampled = self.pool.sample(self._opp_rng)
+            self._opp_id = opponent_name_to_id(self._opp_name)
             # Stateful (recurrent) opponents register as factories: instantiate
             # a fresh callable per-episode so its hidden state doesn't leak
             # across episodes, and so parallel envs don't share state.
@@ -182,6 +207,7 @@ class SingleAgentBuckshotEnv(gym.Env):
             if not terminated:
                 return self._obs(), {
                     "opponent": self._opp_name,
+                    "opponent_id": self._opp_id,
                     "agent_pid": self._agent_pid_this_ep,
                     **self._chamber_info(),
                 }
@@ -195,6 +221,7 @@ class SingleAgentBuckshotEnv(gym.Env):
         # because terminations==True would fire on the next step.
         return self._obs(), {
             "opponent": self._opp_name,
+            "opponent_id": self._opp_id,
             "agent_pid": self._agent_pid_this_ep,
             "_terminated_in_reset": True,
             "_terminal_reward": terminal_reward,
@@ -208,7 +235,11 @@ class SingleAgentBuckshotEnv(gym.Env):
             obs = self._obs()
             winner = self.engine.state.winner
             reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
-            return obs, reward, True, False, {"opponent": self._opp_name, **self._chamber_info()}
+            return obs, reward, True, False, {
+                "opponent": self._opp_name,
+                "opponent_id": self._opp_id,
+                **self._chamber_info(),
+            }
 
         # Snapshot state for shaping (zero cost when all shaping coefs == 0)
         hp_me_before = self.engine.state.players[self._agent_pid_this_ep].hp
@@ -226,7 +257,11 @@ class SingleAgentBuckshotEnv(gym.Env):
             return self._terminal_return(hp_me_before, hp_opp_before, reloads_before)
 
         shaped = self._shaped_reward(hp_me_before, hp_opp_before, reloads_before)
-        return self._obs(), shaped, False, False, {"opponent": self._opp_name, **self._chamber_info()}
+        return self._obs(), shaped, False, False, {
+            "opponent": self._opp_name,
+            "opponent_id": self._opp_id,
+            **self._chamber_info(),
+        }
 
     def render(self) -> Optional[str]:
         s = self.engine.state
@@ -432,5 +467,9 @@ class SingleAgentBuckshotEnv(gym.Env):
             float(reward),
             True,
             False,
-            {"opponent": self._opp_name, **self._chamber_info()},
+            {
+                "opponent": self._opp_name,
+                "opponent_id": self._opp_id,
+                **self._chamber_info(),
+            },
         )

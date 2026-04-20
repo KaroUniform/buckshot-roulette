@@ -14,7 +14,13 @@ from rl.opponents import (
     conservative_opponent,
     random_opponent,
 )
-from rl.single_agent_env import SingleAgentBuckshotEnv
+from rl.single_agent_env import (
+    N_OPPONENT_IDS,
+    OPPONENT_ID_MAP,
+    OPPONENT_ID_OTHER,
+    SingleAgentBuckshotEnv,
+    opponent_name_to_id,
+)
 
 
 def _assert(cond, msg):
@@ -350,6 +356,63 @@ def test_e9_scenario_replay_disabled_by_default():
     print(f"ok  e9_scenario_replay_disabled_by_default (forced-pattern hits {forced_pattern_count}/60)")
 
 
+def test_e19_opponent_id_map_is_stable():
+    """The rule-based slots 0..3 must have stable, documented IDs,
+    and any other name must collapse to OPPONENT_ID_OTHER."""
+    _assert(OPPONENT_ID_MAP["random"] == 0, "random must be id 0")
+    _assert(OPPONENT_ID_MAP["aggressive"] == 1, "aggressive must be id 1")
+    _assert(OPPONENT_ID_MAP["conservative"] == 2, "conservative must be id 2")
+    _assert(OPPONENT_ID_MAP["strong_baseline"] == 3, "strong_baseline must be id 3")
+    _assert(N_OPPONENT_IDS == 5, "total slot count must be 5")
+    _assert(OPPONENT_ID_OTHER == 4, "catch-all slot must be 4")
+    _assert(opponent_name_to_id("some_snapshot_7") == OPPONENT_ID_OTHER,
+            "unknown name should collapse to OTHER")
+    _assert(opponent_name_to_id("random") == 0,
+            "known rule-based name should map to its slot")
+    print("ok  e19_opponent_id_map_is_stable")
+
+
+def test_e19_env_surfaces_opponent_id_in_info():
+    """reset() and step() must include `opponent_id` in every info dict,
+    matching the sampled opponent name."""
+    rng = np.random.default_rng(42)
+    pool = OpponentPool({
+        "random": random_opponent,
+        "aggressive": aggressive_opponent,
+        "conservative": conservative_opponent,
+    })
+    env = SingleAgentBuckshotEnv(opponent_pool=pool, agent_pid=0)
+    for _ in range(20):
+        obs, info = env.reset(seed=int(rng.integers(0, 1_000_000)))
+        _assert("opponent_id" in info, "reset info must include opponent_id")
+        _assert(info["opponent_id"] == opponent_name_to_id(info["opponent"]),
+                f"opponent_id {info['opponent_id']} must match name {info['opponent']}")
+        if info.get("_terminated_in_reset"):
+            continue
+        done = False
+        while not done:
+            legal = np.flatnonzero(obs["action_mask"])
+            a = int(rng.choice(legal))
+            obs, _, term, trunc, info = env.step(a)
+            done = term or trunc
+            _assert("opponent_id" in info, "step info must include opponent_id")
+            _assert(info["opponent_id"] == opponent_name_to_id(info["opponent"]),
+                    "opponent_id must match opponent name in step info")
+    print("ok  e19_env_surfaces_opponent_id_in_info")
+
+
+def test_e19_unknown_opponent_collapses_to_other():
+    """If we register a custom-named opponent, it must appear in info
+    with opponent_id == OPPONENT_ID_OTHER (slot 4)."""
+    pool = OpponentPool({"snapshot_k": random_opponent})
+    env = SingleAgentBuckshotEnv(opponent_pool=pool, agent_pid=0)
+    obs, info = env.reset(seed=0)
+    _assert(info["opponent"] == "snapshot_k", "opponent name preserved")
+    _assert(info["opponent_id"] == OPPONENT_ID_OTHER,
+            f"snapshot_k should map to OTHER={OPPONENT_ID_OTHER}, got {info['opponent_id']}")
+    print("ok  e19_unknown_opponent_collapses_to_other")
+
+
 def test_e9_scenario_replay_episode_completes():
     """Random rollouts from injected scenarios should still terminate ±1."""
     rng = np.random.default_rng(0)
@@ -392,6 +455,9 @@ def main() -> int:
         test_e9_scenario_replay_injects_survival_state,
         test_e9_scenario_replay_disabled_by_default,
         test_e9_scenario_replay_episode_completes,
+        test_e19_opponent_id_map_is_stable,
+        test_e19_env_surfaces_opponent_id_in_info,
+        test_e19_unknown_opponent_collapses_to_other,
     ]
     failures = 0
     for t in tests:
