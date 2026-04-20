@@ -1457,7 +1457,7 @@ in the stub. Three points worth noting:
   track absolute scaling progress head-to-head.
 
 
-## E19 — opponent embedding (design)
+## E19 — opponent embedding (in progress, 2026-04-21)
 
 **Motivation.** E18 showed that scaling hack-obs + rule-based league
 delivers +3pp on `strong_baseline` (0.676 vs E11a's 0.646) and a
@@ -1533,8 +1533,33 @@ E18, FF-E10, E11a.
   the tiny parameter count, but documented as a possibility.
 
 **Implementation plan (incremental commits):**
-1. `opp_id_map` constant + env info plumbing + tests.
+1. `opp_id_map` constant + env info plumbing + tests. ✅ (ac92221)
 2. `RecurrentActorCritic` opponent embedding + tests
-   (backward-compat checkpoint load included).
-3. PPO rollout buffer + training CLI flags + smoke test.
-4. Launch E19 run on beeline, eval, post-mortem appended here.
+   (backward-compat checkpoint load included). ✅ (780e1b7)
+3. PPO rollout buffer + training CLI flags + smoke test. ✅ (0aa0441)
+4. Launch E19 run on beeline, eval, post-mortem appended here. ⏳
+
+**Status (launched).** E19_opp_embed_s10 is training on GPU 1
+(beeline) as of 2026-04-21 20:11 UTC. Config matches E18 exactly
+except for `--opp-embed` (n_opponents=5): hidden=256, 10M steps,
+seed=10, gamma=0.995, ent_coef=0.01, snapshot_every=10,
+eval_every=20, eval_eps=200. League: rule-based only (no FF-E10
+pin, which E16 showed is net negative).
+
+Early trajectory (first 17 updates, ~70k steps):
+- return_50 climbed from −0.84 at u=1 to +0.28 by u=17. E18's
+  return_50 was still around −0.6 at the same step count. This is
+  a noticeably faster early ramp — consistent with the embedding
+  letting the policy specialize against `random`/`aggressive` (the
+  two most-common pool samples early in training, before snapshot
+  slots get filled).
+- entropy fell from 0.98 → 0.40 by u=17, again faster than E18
+  (which still had entropy ≈0.9 at the same step). This is slightly
+  concerning — if the policy collapses to a single-mode exploit
+  too early, the late-stage league-matching phase might fail to
+  recover diversity. Monitor for entropy < 0.1 with stalled
+  improvement as an early-stop heuristic.
+- approx_kl stable at ~0.002, clipfrac <3%. No optimization
+  pathologies so far.
+
+Post-mortem to be appended once training + eval complete (~2h).
