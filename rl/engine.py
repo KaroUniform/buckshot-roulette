@@ -314,7 +314,13 @@ class BuckshotEngine:
         Shell-based items ignore both and depend only on shotgun state.
         """
         s = self.state
-        if item in (Item.HANDSAW, Item.BEER, Item.GLASS, Item.PHONE, Item.INVERTER):
+        if item == Item.HANDSAW:
+            # No chamber → can't saw. Already-elevated damage_mult means
+            # a prior saw is pending; stacking is a no-op in the real
+            # game, so we forbid using a second saw to keep the action
+            # space honest.
+            return bool(s.shells) and s.damage_mult < 2
+        if item in (Item.BEER, Item.GLASS, Item.PHONE, Item.INVERTER):
             return bool(s.shells)
         if item == Item.SMOKE:
             return user.hp < user.max_hp
@@ -566,7 +572,11 @@ class BuckshotEngine:
         source_inv[int(item)] -= 1
 
         if item == Item.HANDSAW:
-            s.damage_mult *= 2
+            # Real Buckshot Roulette caps the next-shot damage at 2x. A
+            # second saw before firing is wasted (no stacking). We set
+            # rather than multiply; legality check in _item_usable also
+            # blocks using a handsaw while damage_mult >= 2.
+            s.damage_mult = 2
         elif item == Item.BEER:
             ejected_live = s.shells.pop(0)
             for k in range(2):

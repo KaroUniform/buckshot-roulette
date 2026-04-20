@@ -123,6 +123,31 @@ def test_handsaw_doubles_damage_then_resets():
     print("ok  handsaw_doubles_damage_then_resets")
 
 
+def test_handsaw_does_not_stack():
+    """Real Buckshot Roulette caps next-shot damage at 2x. A second
+    handsaw before firing must be a no-op — neither the damage_mult
+    nor the USE_HANDSAW legality should escalate past 2. Absence of
+    this cap would let the RL agent discover and exploit nonexistent
+    mechanics during self-play.
+    """
+    e = BuckshotEngine(seed=7)
+    e.reset()
+    e.state.shells = [True, False]
+    p = e.state.players[e.state.current_player]
+    p.inventory[int(Item.HANDSAW)] = 2
+    e.step(int(Action.USE_HANDSAW))
+    _assert(e.state.damage_mult == 2, "first saw must set damage_mult=2")
+    mask = e.legal_actions()
+    _assert(not mask[int(Action.USE_HANDSAW)],
+            "second USE_HANDSAW must be illegal while damage_mult already 2")
+    # _item_usable should also report False directly
+    _assert(not e._item_usable(Item.HANDSAW, p, e.state.players[1 - e.state.current_player]),
+            "_item_usable(HANDSAW) must reject second saw")
+    # And the mult stays at 2 (no stacking even if a buggy caller forces it)
+    _assert(e.state.damage_mult == 2, "damage_mult must not escalate")
+    print("ok  handsaw_does_not_stack")
+
+
 def test_blank_self_shot_keeps_turn():
     e = BuckshotEngine(seed=11)
     e.reset()
@@ -674,6 +699,7 @@ def main() -> int:
         test_smoke_caps_at_max_hp,
         test_item_usable_respects_user_and_target_args,
         test_handsaw_doubles_damage_then_resets,
+        test_handsaw_does_not_stack,
         test_blank_self_shot_keeps_turn,
         test_blank_self_shot_on_last_shell_still_keeps_turn,
         test_live_self_shot_passes_turn_and_damages,
