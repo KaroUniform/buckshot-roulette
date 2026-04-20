@@ -4,10 +4,9 @@
 # - scenario_replay_prob 0.15 → 0.30 (more s* visits per batch)
 # - --no-anneal-lr (LR stays at 3e-4, gradients stay active to end)
 # - hidden=256, γ=0.999, 3M steps (matches E9 compute budget)
-set -euo pipefail
-cd /home/a_kravchenko/buckshot-roulette
-source ~/miniforge3/etc/profile.d/conda.sh
+source ~/miniconda3/etc/profile.d/conda.sh 2>/dev/null || source ~/anaconda3/etc/profile.d/conda.sh
 conda activate buckshot-rl
+cd ~/buckshot-roulette
 export CUDA_VISIBLE_DEVICES=1
 python -m rl.ppo \
     --total-timesteps 3000000 \
