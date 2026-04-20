@@ -521,17 +521,13 @@ class BuckshotEngine:
             return  # do not end turn; caller will pick an opp item next
         elif item == Item.INVERTER:
             # Flip the next shell only (matches wiki: "swaps the polarity of the
-            # current shell in the chamber").
+            # current shell in the chamber"). The game does NOT reveal the new
+            # polarity to the user — the shell stays in the barrel. So we only
+            # flip already-known knowledge; we do NOT newly reveal slot 0.
             s.shells[0] = not s.shells[0]
-            # Any prior knowledge of position 0 is now stale — flip it too
             for k in range(2):
                 if 0 in s.known_shells[k]:
                     s.known_shells[k][0] = not s.known_shells[k][0]
-            # The player who used the inverter physically handled the shell and
-            # sees its new state. Without this, the n_live/n_blank counters leak
-            # the pre-flip state to any opponent with memory while the inverter-
-            # user's own policy input stays blind — an unfair asymmetry.
-            s.known_shells[s.current_player][0] = s.shells[0]
 
         # A pick action consumes adrenaline; regular item uses don't touch it.
         # We intentionally DO NOT flip a "used non-adrenaline item" flag any

@@ -204,10 +204,10 @@ def test_inverter_flips_next_shell():
     print("ok  inverter_flips_next_shell")
 
 
-def test_inverter_reveals_new_state_to_user():
-    # Without this, the user of the inverter gets less info than the opponent
-    # (who watches public n_live/n_blank counters flip). The player who
-    # physically handled the shell must know its new state.
+def test_inverter_does_not_reveal_to_anyone():
+    # Game rule: the inverter flips the chambered shell's polarity but does
+    # NOT show the new state to the user — the shell stays in the barrel.
+    # So if slot 0 was unknown, it remains unknown to BOTH players.
     e = BuckshotEngine(seed=101)
     e.reset()
     e.state.shells = [True, False, True]
@@ -218,15 +218,15 @@ def test_inverter_reveals_new_state_to_user():
     p.inventory[int(Item.INVERTER)] = 1
     e.step(int(Action.USE_INVERTER))
     _assert(
-        e.state.known_shells[user].get(0) is False,
-        "Inverter user must learn the new slot-0 state (was live -> blank)",
+        0 not in e.state.known_shells[user],
+        "Inverter must NOT reveal slot 0 to the user",
     )
     _assert(
         0 not in e.state.known_shells[1 - user],
-        "Inverter must NOT newly reveal slot 0 to the opponent",
+        "Inverter must NOT reveal slot 0 to the opponent",
     )
 
-    # And when slot 0 was previously known, knowledge flips and stays with user.
+    # But existing knowledge about slot 0 on EITHER side must flip to stay valid.
     e2 = BuckshotEngine(seed=102)
     e2.reset()
     e2.state.shells = [False, True, False]
@@ -238,13 +238,13 @@ def test_inverter_reveals_new_state_to_user():
     e2.step(int(Action.USE_INVERTER))
     _assert(
         e2.state.known_shells[user2].get(0) is True,
-        "Inverter user's known state must match the flipped shell",
+        "User's prior knowledge of slot 0 must flip after inversion",
     )
     _assert(
         e2.state.known_shells[1 - user2].get(0) is True,
-        "Opponent's prior knowledge of slot 0 must flip too",
+        "Opponent's prior knowledge of slot 0 must flip after inversion",
     )
-    print("ok  inverter_reveals_new_state_to_user")
+    print("ok  inverter_does_not_reveal_to_anyone")
 
 
 def test_glass_reveals_to_self_only():
@@ -473,7 +473,7 @@ def main() -> int:
         test_live_self_shot_passes_turn_and_damages,
         test_handcuffs_skip_opponent_turn,
         test_inverter_flips_next_shell,
-        test_inverter_reveals_new_state_to_user,
+        test_inverter_does_not_reveal_to_anyone,
         test_glass_reveals_to_self_only,
         test_adrenaline_two_step,
         test_pills_can_kill_and_end_game,
