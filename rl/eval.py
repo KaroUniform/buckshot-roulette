@@ -27,6 +27,8 @@ def evaluate_policy(
 
     `policy` must implement `.act(obs_tensor, mask_tensor) -> action_int_tensor`.
     """
+    if n_episodes < 1:
+        raise ValueError(f"n_episodes must be >= 1, got {n_episodes}")
     opponents = opponents or NAMED_OPPONENTS
     rng = np.random.default_rng(seed)
     results: dict[str, float] = {}
@@ -68,6 +70,8 @@ def evaluate_recurrent_policy(
 
     Maintains per-episode hidden state (reset on each env reset).
     """
+    if n_episodes < 1:
+        raise ValueError(f"n_episodes must be >= 1, got {n_episodes}")
     opponents = opponents or NAMED_OPPONENTS
     rng = np.random.default_rng(seed)
     results: dict[str, float] = {}

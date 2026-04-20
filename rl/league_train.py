@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import subprocess
 import sys
 import time
@@ -131,16 +132,27 @@ def main() -> int:
         if prev_gen_finals:
             print(f"  opponent seeds from gen {gen-1}: {len(prev_gen_finals)} ckpts")
 
-        # Map agents to GPUs (round-robin if fewer GPUs than agents)
-        with ThreadPoolExecutor(max_workers=len(gpus)) as ex:
-            futures = []
-            for i, agent in enumerate(AGENTS):
-                gpu = gpus[i % len(gpus)]
-                print(f"  [gen{gen}/{agent['id']} gpu{gpu}] launching ...")
-                futures.append(ex.submit(
-                    run_one, agent, gen, gpu, a.steps_per_gen, a.sweep_dir,
+        # Dynamically lease a GPU per task from a queue to avoid
+        # oversubscription when len(AGENTS) > len(gpus). Pre-assigning
+        # gpu = gpus[i % len(gpus)] would let two tasks for the same
+        # GPU run concurrently if an earlier GPU happens to free up first.
+        gpu_pool: queue.Queue[int] = queue.Queue()
+        for g in gpus:
+            gpu_pool.put(g)
+
+        def run_with_gpu_lease(agent: dict) -> dict:
+            gpu = gpu_pool.get()
+            print(f"  [gen{gen}/{agent['id']} gpu{gpu}] launching ...")
+            try:
+                return run_one(
+                    agent, gen, gpu, a.steps_per_gen, a.sweep_dir,
                     prev_gen_finals, a.snapshot_every, a.eval_every, a.eval_episodes,
-                ))
+                )
+            finally:
+                gpu_pool.put(gpu)
+
+        with ThreadPoolExecutor(max_workers=len(gpus)) as ex:
+            futures = [ex.submit(run_with_gpu_lease, agent) for agent in AGENTS]
             gen_results = [f.result() for f in futures]
         for r in gen_results:
             status = "OK" if r["returncode"] == 0 else f"FAIL(rc={r['returncode']})"

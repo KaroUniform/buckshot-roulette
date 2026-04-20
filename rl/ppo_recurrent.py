@@ -143,8 +143,17 @@ def train(
                     w_embed = state["obs_embed.0.weight"]
                     embed_dim, obs_dim = int(w_embed.shape[0]), int(w_embed.shape[1])
                     hidden = int(state["gru.weight_ih_l0"].shape[0] // 3)
+                    aux_dim = (
+                        int(state["aux_head.weight"].shape[0])
+                        if "aux_head.weight" in state
+                        else 0
+                    )
                     net = RecurrentActorCritic(
-                        obs_dim, NUM_ACTIONS, hidden=hidden, embed=embed_dim
+                        obs_dim,
+                        NUM_ACTIONS,
+                        hidden=hidden,
+                        embed=embed_dim,
+                        aux_dim=aux_dim,
                     ).to(device)
                     net.load_state_dict(state)
                     net.eval()

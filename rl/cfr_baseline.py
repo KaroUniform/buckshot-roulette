@@ -28,6 +28,10 @@ def run_cfr(
     game_params: Optional[dict] = None,
     plus: bool = True,
 ) -> dict:
+    if iterations < 1:
+        raise ValueError(f"iterations must be >= 1, got {iterations}")
+    if log_every < 1:
+        raise ValueError(f"log_every must be >= 1, got {log_every}")
     os.makedirs(out_dir, exist_ok=True)
     game = pyspiel.load_game("simple_buckshot", game_params or {})
     solver = (
