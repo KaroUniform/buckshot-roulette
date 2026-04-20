@@ -1151,3 +1151,101 @@ architecture fixes can't close without orders of magnitude more data.
 4. **Deferred: harder auxiliary tasks.** The E12b post-mortem suggested
    predicting p(next-shell-live | obs) as a better aux target. Only
    revisit after architecture/data scaling is exhausted.
+
+---
+
+## Addendum to E13 — hack-obs recurrent (E11a re-eval) vs honest-obs
+
+After the E13 post-mortem, one key cell was still missing: what does
+**hack-obs + recurrent** (the E11a checkpoint) score against the
+post-fix opponent suite? This single number decides whether the 0.60
+ceiling on honest-obs-GRU is about *information* or *architecture*.
+
+### Method
+
+Re-ran E11a's `policy_final.pt` at 500 eps/opp vs the same opponent
+suite E12b/E13 used, with `honest_obs=False` (E11a was trained on the
+47-dim hack observation). Also evaluated FF-E10 the same way for an
+apples-to-apples reference point, and threw in FF-E10 as an extra eval
+opponent for both.
+
+### Results
+
+| Opponent | E11a hack-GRU (3M) | E13 honest-GRU+FF-E10-pool (3M) | FF-E10 (3M, feedforward) |
+|---|---|---|---|
+| random | 0.936 ± 0.011 | 0.936 ± 0.011 | 0.930 ± 0.011 |
+| aggressive | 0.810 ± 0.018 | 0.800 ± 0.018 | 0.796 ± 0.018 |
+| conservative | 0.760 ± 0.019 | 0.680 ± 0.021 | 0.744 ± 0.020 |
+| **strong_baseline** | **0.646 ± 0.021** | **0.594 ± 0.022** | **0.654 ± 0.021** |
+| ff_e10 | 0.550 ± 0.022 | 0.492 ± 0.022 | — |
+
+### What changes
+
+1. **The 0.60 ceiling on honest-GRU is about information, not
+   architecture.** Hack-GRU (E11a) hits 0.646 vs `strong_baseline`,
+   essentially matching FF-E10's 0.654. The gap between hack-GRU and
+   honest-GRU is **5.2pp** (2.4σ) — right in the range you'd expect if
+   explicit n_live/n_blank counters in the observation are genuinely
+   worth a few points in close-game decisions.
+
+2. **Architecture (FF vs recurrent) is NOT the bottleneck.** At
+   matched hack observations, recurrent-GRU (E11a: 0.646) ≈ feedforward
+   (FF-E10: 0.654), and head-to-head E11a **beats** FF-E10 at 0.550 ±
+   0.022 (2.3σ above 50%). The GRU is at least as good as FF at this
+   scale — the original reason we switched to recurrent (inference
+   over hidden state) is doing its job.
+
+3. **The E12b post-mortem's conclusion partially reverses.** E12b
+   concluded "the ceiling is NOT about chamber estimation — it's
+   about decision-making." That's *half* right. The correct reading:
+   - Honest-obs GRU *can* track chamber composition (aux head proved
+     this in E12b).
+   - But the honest observation itself **contains less information**
+     than hack. Specifically, the public shot/beer/inverter counters
+     don't pin down n_live exactly when items have been used in
+     ways that change composition (BEER-eject on unknown-color, or
+     INVERTER flip semantics). Some games remain genuinely ambiguous
+     to honest-obs that aren't to hack-obs.
+   - Therefore representation shaping on the honest side can't close
+     the gap (matches E12b's negative result), but hack obs is
+     directly worth ~5pp.
+
+4. **E13's "structural ceiling" claim needs revision.** The
+   `strong_baseline` ceiling is structural **for honest-obs** but not
+   for the game. Hack-observer policies (both recurrent and FF) land
+   ~5pp above it.
+
+### Decision
+
+- **The honest-obs project is a real handicap, not just an aesthetic
+  choice.** Continuing on honest obs means accepting a 5pp tax vs
+  hack-observer opponents.
+- **If we care about maximizing play strength, switch back to hack
+  obs.** E11a is already a decent baseline there; scaling it (longer
+  run, bigger model, richer league) is the fast path.
+- **If we care about demonstrating learning under information
+  asymmetry** (the original honest-obs motivation), the plateau is the
+  point and we should accept 0.594 as the correct number — but then
+  evaluate against opponents that *also* use honest obs, not against
+  `strong_baseline` with hack info.
+
+This is a meaningful reframing. The E14 / E15 / E16 priorities shift:
+
+### Next steps (revised again)
+
+1. **E16 promoted — re-enter hack obs and scale up.** Train a fresh
+   3M-step recurrent policy on hack obs with seed 8, FF-E10 in the
+   league, and `--aux-chamber` off. Compare to E11a's 0.646 — if we
+   significantly exceed it, scaling the hack-obs line further is the
+   frontier. Cheap (~90 min).
+2. **E17 — honest-vs-honest evaluation.** Build an honest-obs analog
+   of `strong_baseline` that only reads public counters (BEER-counter,
+   INVERTER-counter, shots-fired) and can't peek at n_live directly.
+   Evaluate E12a/b seeds against *that*. If they score much better,
+   the honest-GRU is actually playing well — it just loses info-tax to
+   hack-obs rule-based opponents. If they still plateau, the issue is
+   deeper.
+3. **E14 and E15 remain useful but lower priority.** Data/model
+   scaling on honest obs is fine but unlikely to close the full 5pp
+   information gap regardless. E16 answers the more pressing question
+   first.
