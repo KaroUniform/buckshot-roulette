@@ -400,7 +400,11 @@ def _strong_baseline_decision(
         # (c) Can't kill this shot — do we need to survive?
         # If opp can't be killed and we're 1HP, we lose this exchange. Consider
         # defensive items before committing to a live shot.
-        will_die_if_opp_shoots_next = my_hp <= max(1, dmg_mult)
+        # NOTE: dmg_mult is OUR saw multiplier (from our HANDSAW). The engine
+        # resets damage_mult to 1 after a shot fires, so whatever opp does next
+        # turn starts from mult=1 — their retaliation deals 1 dmg even if we
+        # sawed. So the survival check is just my_hp <= 1.
+        will_die_if_opp_shoots_next = my_hp <= 1
         cannot_kill_opp = not _can_one_shot_opp(obs, with_saw=False)
         if cannot_kill_opp and will_die_if_opp_shoots_next:
             # BEER ejects the live shell entirely → survives

@@ -27,26 +27,59 @@ def test_record_terminal_returns_counts_each_done_exactly_once():
     """Pure-function regression: a single `done==True` event must contribute
     exactly one entry per env. Earlier the PPO loop accidentally walked
     both `done[]` and `infos["final_info"]`, double-counting every episode.
+
+    Under shaping, `reward` is a per-step delta and `running_return`
+    accumulates the episode sum until termination.
     """
     buf: list = []
     # 4 envs; envs 0 and 2 terminated this step
     done = np.array([True, False, True, False])
-    reward = np.array([1.0, 0.0, -1.0, 0.0])
-    n = record_terminal_returns(buf, done, reward, max_size=10)
+    reward = np.array([1.0, 0.0, -1.0, 0.0], dtype=np.float32)
+    running = np.zeros(4, dtype=np.float32)
+    n = record_terminal_returns(buf, done, reward, running, max_size=10)
     _assert(n == 2, f"Expected 2 terminations counted, got {n}")
-    _assert(buf == [1.0, -1.0], f"Buffer should hold the two terminal rewards: {buf}")
+    _assert(buf == [1.0, -1.0], f"Buffer should hold the two terminal returns: {buf}")
+    # Terminating envs must have their running sums reset to 0.
+    _assert(running[0] == 0.0 and running[2] == 0.0, f"Running sums not reset on done: {running}")
 
     # Calling again with no terminations should not change anything
-    n2 = record_terminal_returns(buf, np.zeros(4, dtype=bool), np.zeros(4), max_size=10)
+    n2 = record_terminal_returns(
+        buf,
+        np.zeros(4, dtype=bool),
+        np.zeros(4, dtype=np.float32),
+        running,
+        max_size=10,
+    )
     _assert(n2 == 0 and buf == [1.0, -1.0], f"No-op call corrupted buffer: {buf}")
     print("ok  record_terminal_returns_counts_each_done_exactly_once")
+
+
+def test_record_terminal_returns_accumulates_across_steps():
+    """New behavior under shaping: per-step delta rewards must sum across the
+    episode before the terminal return is logged."""
+    buf: list = []
+    running = np.zeros(1, dtype=np.float32)
+    done_f = np.zeros(1, dtype=bool)
+    # Three shaping steps then terminal
+    record_terminal_returns(buf, done_f, np.array([0.2], dtype=np.float32), running, max_size=10)
+    record_terminal_returns(buf, done_f, np.array([0.3], dtype=np.float32), running, max_size=10)
+    record_terminal_returns(buf, done_f, np.array([-0.1], dtype=np.float32), running, max_size=10)
+    _assert(buf == [], f"Buffer should be empty before termination: {buf}")
+    record_terminal_returns(
+        buf, np.array([True]), np.array([1.0], dtype=np.float32), running, max_size=10
+    )
+    # 0.2 + 0.3 - 0.1 + 1.0 = 1.4
+    _assert(len(buf) == 1 and abs(buf[0] - 1.4) < 1e-5, f"Expected return 1.4, got {buf}")
+    _assert(running[0] == 0.0, f"Running sum must reset after done: {running}")
+    print("ok  record_terminal_returns_accumulates_across_steps")
 
 
 def test_record_terminal_returns_respects_max_size():
     buf = [float(i) for i in range(10)]  # [0, 1, ..., 9]
     done = np.array([True])
-    reward = np.array([99.0])
-    record_terminal_returns(buf, done, reward, max_size=10)
+    reward = np.array([99.0], dtype=np.float32)
+    running = np.zeros(1, dtype=np.float32)
+    record_terminal_returns(buf, done, reward, running, max_size=10)
     _assert(len(buf) == 10, f"Buffer should stay at max_size, got {len(buf)}")
     _assert(buf[-1] == 99.0, f"Newest value should be at the end: {buf}")
     _assert(buf[0] == 1.0, f"Oldest (0.0) should have been evicted: {buf[0]}")
@@ -114,6 +147,7 @@ def main() -> int:
     failures = 0
     tests = [
         test_record_terminal_returns_counts_each_done_exactly_once,
+        test_record_terminal_returns_accumulates_across_steps,
         test_record_terminal_returns_respects_max_size,
         test_ppo_single_update_runs_clean,
         test_ppo_termination_count_logged,

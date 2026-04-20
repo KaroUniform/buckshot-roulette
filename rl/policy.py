@@ -59,3 +59,17 @@ class ActorCritic(nn.Module):
         logits, _ = self.forward(obs)
         masked_logits = logits.masked_fill(mask == 0, -1e8)
         return Categorical(logits=masked_logits).sample()
+
+
+def load_policy(path: str, n_actions: int, device: str = "cpu") -> ActorCritic:
+    """Load an ActorCritic checkpoint, auto-detecting obs_dim/hidden from weights.
+
+    Works across old runs that may have used different hidden sizes.
+    """
+    state = torch.load(path, map_location=device, weights_only=True)
+    w0 = state["body.0.weight"]
+    hidden, obs_dim = int(w0.shape[0]), int(w0.shape[1])
+    pol = ActorCritic(obs_dim, n_actions, hidden=hidden).to(device)
+    pol.load_state_dict(state)
+    pol.eval()
+    return pol

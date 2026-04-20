@@ -29,19 +29,13 @@ from rl.opponents import (
     OpponentPool,
     make_frozen_policy_opponent,
 )
-from rl.policy import ActorCritic
+from rl.policy import ActorCritic, load_policy
 from rl.engine import NUM_ACTIONS
 from rl.single_agent_env import SingleAgentBuckshotEnv
 
 
 def _load_checkpoint(path: str, device: str = "cpu") -> ActorCritic:
-    state = torch.load(path, map_location=device, weights_only=True)
-    obs_dim = state["body.0.weight"].shape[1]
-    hidden = state["body.0.weight"].shape[0]
-    pol = ActorCritic(obs_dim, NUM_ACTIONS, hidden=hidden).to(device)
-    pol.load_state_dict(state)
-    pol.eval()
-    return pol
+    return load_policy(path, n_actions=NUM_ACTIONS, device=device)
 
 
 def _ckpt_step(path: str) -> int:

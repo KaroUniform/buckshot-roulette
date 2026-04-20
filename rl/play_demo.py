@@ -21,20 +21,14 @@ import numpy as np
 import torch
 
 from rl.engine import Action, BuckshotEngine, Item, NUM_ACTIONS, NUM_ITEMS
-from rl.policy import ActorCritic
+from rl.policy import ActorCritic, load_policy as _load_policy
 
 
 DEFAULT_CKPT = "rl_runs/league_v1/A_ent005_gen2/policy_final.pt"
 
 
 def load_policy(path: str, device: str = "cpu") -> ActorCritic:
-    state = torch.load(path, map_location=device, weights_only=True)
-    obs_dim = state["body.0.weight"].shape[1]
-    hidden = state["body.0.weight"].shape[0]
-    p = ActorCritic(obs_dim, NUM_ACTIONS, hidden=hidden).to(device)
-    p.load_state_dict(state)
-    p.eval()
-    return p
+    return _load_policy(path, n_actions=NUM_ACTIONS, device=device)
 
 
 def inv_str(inv: np.ndarray) -> str:
@@ -149,9 +143,7 @@ def describe_step(action: int, actor: str, info: dict) -> None:
     base = f"  {actor} → {pretty_action(action)}"
     extras = []
     if "shot" in info:
-        kind, target_pid, dmg = info["shot"]
-        target = "self" if target_pid == (0 if actor == "BOT" else 1) else "opponent"
-        # Shot target from engine is pid-based. Simpler: just state live/blank.
+        kind, _target_pid, dmg = info["shot"]
         extras.append(f"shot={kind}" + (f" dmg={dmg}" if dmg else ""))
     if "beer_ejected" in info:
         extras.append(f"BEER ejected a {info['beer_ejected']} shell")

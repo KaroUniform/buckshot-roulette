@@ -24,7 +24,7 @@ import numpy as np
 import torch
 
 from rl.engine import NUM_ACTIONS, Action, BuckshotEngine, Item, NUM_ITEMS
-from rl.policy import ActorCritic
+from rl.policy import ActorCritic, load_policy as _load_policy
 
 
 @dataclass
@@ -451,12 +451,8 @@ SCENARIOS: list[Scenario] = [
 ]
 
 
-def load_policy(checkpoint: str, obs_dim: int = 47, hidden: int = 256, device: str = "cpu") -> ActorCritic:
-    p = ActorCritic(obs_dim, NUM_ACTIONS, hidden=hidden).to(device)
-    state = torch.load(checkpoint, map_location=device, weights_only=True)
-    p.load_state_dict(state)
-    p.eval()
-    return p
+def load_policy(checkpoint: str, device: str = "cpu") -> ActorCritic:
+    return _load_policy(checkpoint, n_actions=NUM_ACTIONS, device=device)
 
 
 def _format_action(a: int) -> str:
@@ -523,12 +519,11 @@ def render_markdown(rows: list[dict]) -> str:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("checkpoint", help="Path to .pt checkpoint")
-    p.add_argument("--hidden", type=int, default=256)
     p.add_argument("--device", default="cpu")
     p.add_argument("--out", default=None, help="Output markdown file (default: <ckpt_dir>/analysis.md)")
     a = p.parse_args()
 
-    policy = load_policy(a.checkpoint, hidden=a.hidden, device=a.device)
+    policy = load_policy(a.checkpoint, device=a.device)
     rows = probe_policy(policy, SCENARIOS, device=a.device)
     md = render_markdown(rows)
     out = a.out or os.path.join(os.path.dirname(a.checkpoint) or ".", "analysis.md")
