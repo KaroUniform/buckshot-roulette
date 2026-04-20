@@ -183,6 +183,7 @@ class SingleAgentBuckshotEnv(gym.Env):
                 return self._obs(), {
                     "opponent": self._opp_name,
                     "agent_pid": self._agent_pid_this_ep,
+                    **self._chamber_info(),
                 }
             # else: very rare — retry with a perturbed seed (or a fresh
             # random seed if base_seed was None; np.random.default_rng()
@@ -197,6 +198,7 @@ class SingleAgentBuckshotEnv(gym.Env):
             "agent_pid": self._agent_pid_this_ep,
             "_terminated_in_reset": True,
             "_terminal_reward": terminal_reward,
+            **self._chamber_info(),
         }
 
     def step(self, action):
@@ -206,7 +208,7 @@ class SingleAgentBuckshotEnv(gym.Env):
             obs = self._obs()
             winner = self.engine.state.winner
             reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
-            return obs, reward, True, False, {"opponent": self._opp_name}
+            return obs, reward, True, False, {"opponent": self._opp_name, **self._chamber_info()}
 
         # Snapshot state for shaping (zero cost when all shaping coefs == 0)
         hp_me_before = self.engine.state.players[self._agent_pid_this_ep].hp
@@ -224,7 +226,7 @@ class SingleAgentBuckshotEnv(gym.Env):
             return self._terminal_return(hp_me_before, hp_opp_before, reloads_before)
 
         shaped = self._shaped_reward(hp_me_before, hp_opp_before, reloads_before)
-        return self._obs(), shaped, False, False, {"opponent": self._opp_name}
+        return self._obs(), shaped, False, False, {"opponent": self._opp_name, **self._chamber_info()}
 
     def render(self) -> Optional[str]:
         s = self.engine.state
@@ -338,6 +340,20 @@ class SingleAgentBuckshotEnv(gym.Env):
             mask = np.zeros(NUM_ACTIONS, dtype=np.int8)
         return {"observation": obs, "action_mask": mask}
 
+    def _chamber_info(self) -> dict:
+        """Ground-truth chamber composition for representation-shaping losses.
+
+        Returns the engine's true (n_live, n_blank) for the CURRENT chamber,
+        independent of which obs layout the agent sees. Used by the recurrent
+        PPO trainer to fit an aux-head regression target. On a terminal step
+        the chamber may be empty/stale — the trainer masks those positions
+        in the loss anyway, but we still return the engine's last value
+        rather than NaN to keep tensor shapes uniform.
+        """
+        shells = self.engine.state.shells
+        n_live = sum(1 for x in shells if x)
+        return {"n_live": int(n_live), "n_blank": int(len(shells) - n_live)}
+
     def _play_opponent_until_agent_turn(self) -> tuple[bool, float]:
         """Run opponent moves while it's their turn. Returns (terminated, reward).
 
@@ -411,4 +427,10 @@ class SingleAgentBuckshotEnv(gym.Env):
         winner = self.engine.state.winner
         reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
         reward += self._shaped_reward(hp_me_before, hp_opp_before, reloads_before)
-        return self._obs(), float(reward), True, False, {"opponent": self._opp_name}
+        return (
+            self._obs(),
+            float(reward),
+            True,
+            False,
+            {"opponent": self._opp_name, **self._chamber_info()},
+        )

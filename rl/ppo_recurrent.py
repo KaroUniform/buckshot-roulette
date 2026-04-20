@@ -78,6 +78,12 @@ class RecurrentPPOConfig:
     round_survive_bonus: float = 0.0
     scenario_replay_prob: float = 0.0
     honest_obs: bool = False
+    # Auxiliary chamber-composition loss (BEER/E12b): if True, the policy gets
+    # a 2-dim regression head that predicts (n_live, n_blank) from the GRU
+    # state, trained jointly via MSE with weight `aux_coef`. Used to force the
+    # recurrent trunk to actually track hidden chamber state.
+    aux_chamber: bool = False
+    aux_coef: float = 0.05
     save_dir: str = "rl_runs"
     run_name: str = field(default_factory=lambda: f"ppo_recurrent_{int(time.time())}")
 
@@ -95,6 +101,20 @@ class RecurrentPPOConfig:
                 f"num_minibatches ({self.num_minibatches}) for recurrent PPO"
             )
         return self.num_envs // self.num_minibatches
+
+
+def _aux_from_infos(infos: dict, num_envs: int, device: torch.device) -> torch.Tensor:
+    """Extract per-env (n_live, n_blank) targets from a vector-env info dict.
+
+    SyncVectorEnv aggregates sub-env infos into a dict of per-env arrays; on
+    the occasional auto-reset step the returned info can also carry a
+    `final_info`/`_final_info` entry whose shape differs, but we only consume
+    n_live/n_blank which the env guarantees to emit on every step/reset path.
+    Returns a tensor of shape (num_envs, 2).
+    """
+    n_live = np.asarray(infos.get("n_live", np.zeros(num_envs)), dtype=np.float32)
+    n_blank = np.asarray(infos.get("n_blank", np.zeros(num_envs)), dtype=np.float32)
+    return torch.from_numpy(np.stack([n_live, n_blank], axis=-1)).to(device)
 
 
 def train(
@@ -173,7 +193,10 @@ def train(
     )
 
     obs_dim = envs.single_observation_space["observation"].shape[0]
-    policy = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=cfg.hidden).to(device)
+    aux_dim = 2 if cfg.aux_chamber else 0
+    policy = RecurrentActorCritic(
+        obs_dim, NUM_ACTIONS, hidden=cfg.hidden, aux_dim=aux_dim
+    ).to(device)
     optimizer = optim.Adam(policy.parameters(), lr=cfg.learning_rate, eps=1e-5)
 
     # Rollout buffers
@@ -196,12 +219,22 @@ def train(
     hidden_buf = torch.zeros(
         (cfg.num_steps, 1, cfg.num_envs, cfg.hidden), device=device
     )
+    # Aux-target buffer: ground-truth chamber composition (n_live, n_blank)
+    # for the obs at each step, used to train the aux head.
+    aux_target_buf = (
+        torch.zeros((cfg.num_steps, cfg.num_envs, 2), device=device)
+        if cfg.aux_chamber else None
+    )
 
-    obs_dict, _ = envs.reset(seed=cfg.seed)
+    obs_dict, reset_infos = envs.reset(seed=cfg.seed)
     next_obs = torch.from_numpy(obs_dict["observation"]).to(device)
     next_mask = torch.from_numpy(obs_dict["action_mask"]).to(device)
     next_done = torch.zeros(cfg.num_envs, device=device)
     next_hidden = policy.initial_hidden(cfg.num_envs, device=device)
+    # aux target for the current obs: captured from env info; initially from reset
+    next_aux = None
+    if cfg.aux_chamber:
+        next_aux = _aux_from_infos(reset_infos, cfg.num_envs, device)
 
     num_updates = cfg.total_timesteps // cfg.batch_size
     global_step = 0
@@ -231,6 +264,8 @@ def train(
                 mask_buf[step] = next_mask
                 dones_buf[step] = next_done
                 hidden_buf[step] = next_hidden
+                if cfg.aux_chamber and aux_target_buf is not None:
+                    aux_target_buf[step] = next_aux
 
                 with torch.no_grad():
                     (
@@ -256,6 +291,8 @@ def train(
                 next_done = torch.from_numpy(done.astype(np.float32)).to(device)
                 next_obs = torch.from_numpy(obs_dict["observation"]).to(device)
                 next_mask = torch.from_numpy(obs_dict["action_mask"]).to(device)
+                if cfg.aux_chamber:
+                    next_aux = _aux_from_infos(infos, cfg.num_envs, device)
 
                 n_terminations_total += record_terminal_returns(
                     ep_returns_window, done, reward, ep_running_return
@@ -311,9 +348,17 @@ def train(
                     # h at t=0 for these envs (stored before first step)
                     mb_h0 = hidden_buf[0, :, mb_envs_t].contiguous()
 
-                    logits_seq, values_seq = policy.forward_sequence(
-                        mb_obs, mb_h0, mb_dones
-                    )
+                    if cfg.aux_chamber and aux_target_buf is not None:
+                        logits_seq, values_seq, aux_pred = policy.forward_sequence(
+                            mb_obs, mb_h0, mb_dones, return_aux=True
+                        )
+                        mb_aux_target = aux_target_buf[:, mb_envs_t]
+                    else:
+                        logits_seq, values_seq = policy.forward_sequence(
+                            mb_obs, mb_h0, mb_dones
+                        )
+                        aux_pred = None
+                        mb_aux_target = None
                     masked_logits = logits_seq.masked_fill(mb_masks == 0, -1e8)
                     dist = torch.distributions.Categorical(logits=masked_logits)
                     new_logprob = dist.log_prob(mb_actions)
@@ -344,6 +389,11 @@ def train(
                     ent_loss = entropy.mean()
 
                     loss = pg_loss - cfg.ent_coef * ent_loss + cfg.vf_coef * v_loss
+                    if aux_pred is not None and mb_aux_target is not None:
+                        aux_loss = ((aux_pred - mb_aux_target) ** 2).mean()
+                        loss = loss + cfg.aux_coef * aux_loss
+                    else:
+                        aux_loss = None
 
                     optimizer.zero_grad()
                     loss.backward()
@@ -393,6 +443,8 @@ def train(
                 "rollout/n_terminations_total": n_terminations_total,
                 "pool_size": len(pool),
             }
+            if cfg.aux_chamber and aux_loss is not None:
+                log_entry["loss/aux"] = float(aux_loss.item())
 
             if update % cfg.eval_every_updates == 0 or update == 1:
                 wr = evaluate_recurrent_policy(
@@ -472,6 +524,20 @@ def parse_args() -> RecurrentPPOConfig:
         help="Disable cosine LR anneal; see ppo.py E10 notes for why this helps "
              "escape a collapsed actor.",
     )
+    p.add_argument(
+        "--aux-chamber",
+        action="store_true",
+        help="Add a 2-dim aux head that regresses (n_live, n_blank) from the "
+             "GRU state (E12b BEER representation-shaping loss).",
+    )
+    p.add_argument(
+        "--aux-coef",
+        type=float,
+        default=0.05,
+        help="Weight on the aux chamber-composition MSE loss (only used with "
+             "--aux-chamber). 0.05 picked to be large enough to shape the "
+             "trunk but small enough that policy/value remain primary.",
+    )
     a = p.parse_args()
     cfg = RecurrentPPOConfig(
         total_timesteps=a.total_timesteps,
@@ -497,6 +563,8 @@ def parse_args() -> RecurrentPPOConfig:
         scenario_replay_prob=a.scenario_replay_prob,
         honest_obs=a.honest_obs,
         anneal_lr=not a.no_anneal_lr,
+        aux_chamber=a.aux_chamber,
+        aux_coef=a.aux_coef,
     )
     if a.run_name:
         cfg.run_name = a.run_name

@@ -185,6 +185,71 @@ def test_recurrent_gradients_flow():
     print(f"ok  recurrent_gradients_flow (mean_grad_norm={np.mean(grad_norms):.4f})")
 
 
+def test_recurrent_aux_head_optional():
+    """aux_dim=0 (default) must yield no aux_head and unchanged forward API."""
+    obs_dim = 47
+    p0 = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, aux_dim=0)
+    _assert(p0.aux_head is None, "aux_dim=0 should not construct aux_head")
+    # Backward-compat: forward_sequence without return_aux returns (logits, values)
+    T, B = 3, 2
+    obs_seq = torch.randn(T, B, obs_dim)
+    out = p0.forward_sequence(obs_seq, p0.initial_hidden(B), torch.zeros(T, B))
+    _assert(len(out) == 2, f"expected 2 tensors, got {len(out)}")
+    # With return_aux=True on aux-less model, third element is None
+    out_aux = p0.forward_sequence(
+        obs_seq, p0.initial_hidden(B), torch.zeros(T, B), return_aux=True
+    )
+    _assert(len(out_aux) == 3 and out_aux[2] is None,
+            "aux-less model should return None for aux predictions")
+    print("ok  recurrent_aux_head_optional")
+
+
+def test_recurrent_aux_head_shape_and_grad():
+    """With aux_dim=2, forward_sequence(return_aux=True) returns (T, B, 2)
+    predictions that flow gradients to the trunk."""
+    obs_dim = 47
+    p = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, aux_dim=2)
+    T, B = 4, 3
+    obs_seq = torch.randn(T, B, obs_dim)
+    dones = torch.zeros(T, B)
+    h0 = p.initial_hidden(B)
+    logits, values, aux = p.forward_sequence(obs_seq, h0, dones, return_aux=True)
+    _assert(aux.shape == (T, B, 2), f"aux shape {aux.shape}")
+    # Gradient flows from aux loss to the embed layer (trunk)
+    target = torch.zeros_like(aux)
+    aux_loss = ((aux - target) ** 2).mean()
+    aux_loss.backward()
+    embed_grad = p.obs_embed[0].weight.grad
+    _assert(embed_grad is not None and embed_grad.abs().sum().item() > 0,
+            "aux loss should backprop into trunk (obs_embed)")
+    print("ok  recurrent_aux_head_shape_and_grad")
+
+
+def test_recurrent_aux_ckpt_backward_compat():
+    """A checkpoint saved without an aux_head must still load cleanly, and
+    a saved aux-head checkpoint must restore with matching aux_dim."""
+    import tempfile, os
+    obs_dim = 47
+    # Old-style ckpt (no aux_head)
+    p_old = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, aux_dim=0)
+    # New-style ckpt (with aux_head)
+    p_new = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, aux_dim=2)
+    with tempfile.TemporaryDirectory() as d:
+        old_path = os.path.join(d, "old.pt")
+        new_path = os.path.join(d, "new.pt")
+        torch.save(p_old.state_dict(), old_path)
+        torch.save(p_new.state_dict(), new_path)
+        reloaded_old = load_recurrent_policy(old_path, NUM_ACTIONS, device="cpu")
+        reloaded_new = load_recurrent_policy(new_path, NUM_ACTIONS, device="cpu")
+    _assert(reloaded_old.aux_head is None,
+            "old ckpt should load with no aux_head")
+    _assert(reloaded_new.aux_head is not None,
+            "new ckpt should load with aux_head present")
+    _assert(reloaded_new.aux_head.out_features == 2,
+            f"aux_dim should be 2, got {reloaded_new.aux_head.out_features}")
+    print("ok  recurrent_aux_ckpt_backward_compat")
+
+
 def test_recurrent_checkpoint_round_trip():
     """Train-time save/load must restore exact behavior."""
     import tempfile, os
@@ -222,6 +287,9 @@ def main() -> int:
         test_recurrent_sequence_equals_stepwise,
         test_recurrent_memory_affects_output,
         test_recurrent_gradients_flow,
+        test_recurrent_aux_head_optional,
+        test_recurrent_aux_head_shape_and_grad,
+        test_recurrent_aux_ckpt_backward_compat,
         test_recurrent_checkpoint_round_trip,
     ]
     failures = 0
