@@ -680,6 +680,100 @@ def test_env_routes_hack_layout_to_rule_based_opponent_under_honest_obs():
 
 
 # ----------------------------------------------------------------------
+# Manifest round-trip (for AsyncVectorEnv worker sync)
+# ----------------------------------------------------------------------
+
+
+def test_manifest_rule_based_round_trip():
+    """A pool of rule-based opponents must round-trip through manifest() ->
+    build_pool_from_manifest() without loss of names or weights."""
+    from rl.opponents import (
+        NAMED_OPPONENTS,
+        OpponentPool,
+        build_pool_from_manifest,
+    )
+    pool = OpponentPool(dict(NAMED_OPPONENTS))
+    pool.weights["strong_baseline"] = 2.5
+    manifest = pool.manifest()
+    # Expect one row per named opponent, all `rule:<key>`
+    assert len(manifest) == len(NAMED_OPPONENTS)
+    specs = {row[0]: row for row in manifest}
+    for name in NAMED_OPPONENTS:
+        assert name in specs, f"{name} missing from manifest"
+        assert specs[name][1] == f"rule:{name}"
+    assert specs["strong_baseline"][2] == 2.5
+    # Round-trip
+    rebuilt = build_pool_from_manifest(manifest)
+    assert set(rebuilt.opponents.keys()) == set(NAMED_OPPONENTS.keys())
+    assert rebuilt.weights["strong_baseline"] == 2.5
+    # And rebuilt rule-based fns are the same identity as NAMED_OPPONENTS
+    for name in NAMED_OPPONENTS:
+        assert rebuilt.opponents[name] is NAMED_OPPONENTS[name]
+    print("ok  manifest_rule_based_round_trip")
+
+
+def test_manifest_skips_unannotated_ckpt_opponents():
+    """A pool entry that has neither NAMED_OPPONENTS identity nor a
+    ckpt_path annotation must be dropped from the manifest (with a
+    warning), not carried through as a broken entry."""
+    from rl.opponents import NAMED_OPPONENTS, OpponentPool
+
+    pool = OpponentPool({"random": NAMED_OPPONENTS["random"]})
+    # Add a fake opponent with no ckpt_path annotation
+    def fake_fn(obs, mask, rng):
+        return 0
+    pool.add("mystery", fake_fn, weight=1.0)
+    manifest = pool.manifest()
+    names = [row[0] for row in manifest]
+    assert "random" in names
+    assert "mystery" not in names  # silently (with warning) dropped
+    print("ok  manifest_skips_unannotated_ckpt_opponents")
+
+
+def test_manifest_ckpt_round_trip(tmp_dir=None):
+    """A pool that holds a torch-ckpt opponent with a .ckpt_path annotation
+    must round-trip through manifest() -> build_pool_from_manifest()."""
+    import tempfile, os
+    import torch
+    from rl.engine import NUM_ACTIONS
+    from rl.opponents import (
+        OpponentPool,
+        build_pool_from_manifest,
+        make_frozen_recurrent_opponent_factory,
+    )
+    from rl.policy import RecurrentActorCritic
+
+    with tempfile.TemporaryDirectory() as d:
+        ckpt = os.path.join(d, "tiny.pt")
+        net = RecurrentActorCritic(47, NUM_ACTIONS, hidden=16)
+        torch.save(net.state_dict(), ckpt)
+        # Re-load from disk so it mirrors the runtime path
+        from rl.policy import load_recurrent_policy
+        net2 = load_recurrent_policy(ckpt, NUM_ACTIONS)
+        fac = make_frozen_recurrent_opponent_factory(net2, device="cpu")
+        fac.ckpt_path = ckpt  # type: ignore[attr-defined]
+
+        pool = OpponentPool()
+        pool.add("snap_test", fac, weight=0.7)
+        manifest = pool.manifest()
+        assert len(manifest) == 1
+        name, spec, w, layout = manifest[0]
+        assert name == "snap_test"
+        assert spec == f"ckpt:{ckpt}"
+        assert w == 0.7
+        assert layout == "hack"  # 47-dim → hack
+
+        # Rebuild — opponent must be usable as a factory
+        rebuilt = build_pool_from_manifest(manifest)
+        assert "snap_test" in rebuilt.opponents
+        fn = rebuilt.opponents["snap_test"]
+        # Factory marker preserved + ckpt_path preserved
+        assert getattr(fn, "_is_factory", False) is True
+        assert getattr(fn, "ckpt_path", None) == ckpt
+    print("ok  manifest_ckpt_round_trip")
+
+
+# ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
 
@@ -716,6 +810,10 @@ def main() -> int:
         test_rule_based_opponents_declare_hack_layout,
         test_observation_layout_override,
         test_env_routes_hack_layout_to_rule_based_opponent_under_honest_obs,
+        # manifest / async-worker sync
+        test_manifest_rule_based_round_trip,
+        test_manifest_skips_unannotated_ckpt_opponents,
+        test_manifest_ckpt_round_trip,
     ]
     failures = 0
     for t in tests:

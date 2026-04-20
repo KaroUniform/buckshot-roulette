@@ -838,3 +838,121 @@ class OpponentPool:
     def __len__(self) -> int:
         with self._lock:
             return len(self.opponents)
+
+    def manifest(self) -> list[tuple[str, str, float, str]]:
+        """Serializable description of the pool for AsyncVectorEnv worker sync.
+
+        Returns a list of `(name, kind_spec, weight, obs_layout)` tuples where
+        `kind_spec` is one of:
+          - `"rule:<named_key>"` — a rule-based opponent registered in
+            `NAMED_OPPONENTS`, identified by its key in that registry.
+          - `"ckpt:<abs_path>"` — a frozen policy-based opponent whose
+            weights live on disk at the given path; workers rebuild it by
+            calling `load_recurrent_policy` (or `load_policy` for FF).
+
+        `obs_layout` is "honest" or "hack" (read from the stored callable's
+        `.obs_layout` attr that every policy wrapper sets). Rule-based
+        opponents get layout "agnostic" — they don't care.
+
+        Why this shape: the manifest needs to round-trip through a pickle
+        call across a pipe to subprocess workers that do NOT share Python
+        state with the parent. A pure-data tuple survives that trip
+        regardless of the closures the parent happens to hold.
+
+        Trained recurrent snapshots added by `ppo_recurrent.train()` carry
+        their checkpoint path on the factory as `.ckpt_path` (set by the
+        snapshot-save block). Opponents without that attribute are skipped
+        with a warning — they cannot be reconstructed without code changes.
+        """
+        with self._lock:
+            rows: list[tuple[str, str, float, str]] = []
+            for name, fn in self.opponents.items():
+                w = self.weights[name]
+                layout = getattr(fn, "obs_layout", "agnostic")
+                # Rule-based: find by identity in NAMED_OPPONENTS
+                matched_rule = None
+                for rule_name, rule_fn in NAMED_OPPONENTS.items():
+                    if fn is rule_fn:
+                        matched_rule = rule_name
+                        break
+                if matched_rule is not None:
+                    rows.append((name, f"rule:{matched_rule}", w, "agnostic"))
+                    continue
+                # Policy-based: needs a ckpt_path annotation set by the
+                # code that added it to the pool.
+                ckpt = getattr(fn, "ckpt_path", None)
+                if ckpt is None:
+                    # Can't serialize; skip with a warning so caller knows.
+                    print(
+                        f"[manifest] WARNING: opponent '{name}' has no "
+                        f"ckpt_path annotation and is not in NAMED_OPPONENTS; "
+                        f"it will NOT be visible to AsyncVectorEnv workers."
+                    )
+                    continue
+                rows.append((name, f"ckpt:{ckpt}", w, layout))
+            return rows
+
+
+def build_pool_from_manifest(
+    manifest: list[tuple[str, str, float, str]],
+    device: str = "cpu",
+) -> OpponentPool:
+    """Reconstruct an `OpponentPool` from a manifest produced by
+    `OpponentPool.manifest()`. Intended for `AsyncVectorEnv` workers.
+
+    Ckpt-based entries are loaded from disk via `load_recurrent_policy`
+    (if the saved weights include `gru.weight_ih_l0`) or `load_policy`
+    for the feedforward case. All policies are forced onto `device`
+    (default "cpu") regardless of where the parent had them — env
+    stepping in workers is CPU-bound, and the parent keeps training
+    policy on its GPU.
+
+    Kept as a top-level function (not a classmethod) so it's
+    importable from both `ppo_recurrent.py` and the worker-side env.
+    """
+    import torch
+    from rl.engine import NUM_ACTIONS
+    from rl.policy import load_policy, load_recurrent_policy
+
+    pool = OpponentPool()
+    for name, spec, weight, layout in manifest:
+        if spec.startswith("rule:"):
+            rule_key = spec[len("rule:"):]
+            fn = NAMED_OPPONENTS.get(rule_key)
+            if fn is None:
+                print(
+                    f"[build_pool_from_manifest] WARNING: unknown rule "
+                    f"'{rule_key}' for '{name}'; skipping."
+                )
+                continue
+            pool.add(name, fn, weight=weight)
+            continue
+        if spec.startswith("ckpt:"):
+            path = spec[len("ckpt:"):]
+            try:
+                state = torch.load(path, map_location=device, weights_only=True)
+                if "gru.weight_ih_l0" in state:
+                    net = load_recurrent_policy(path, NUM_ACTIONS, device=device)
+                    for p in net.parameters():
+                        p.requires_grad_(False)
+                    fac = make_frozen_recurrent_opponent_factory(net, device=device)
+                    fac.ckpt_path = path  # type: ignore[attr-defined]
+                    pool.add(name, fac, weight=weight)
+                else:
+                    net = load_policy(path, NUM_ACTIONS, device=device)
+                    for p in net.parameters():
+                        p.requires_grad_(False)
+                    fn = make_frozen_policy_opponent(net, device=device)
+                    fn.ckpt_path = path  # type: ignore[attr-defined]
+                    pool.add(name, fn, weight=weight)
+            except Exception as exc:
+                print(
+                    f"[build_pool_from_manifest] WARNING: could not load "
+                    f"'{name}' from {path}: {exc}"
+                )
+            continue
+        print(
+            f"[build_pool_from_manifest] WARNING: unknown spec '{spec}' "
+            f"for '{name}'; skipping."
+        )
+    return pool
