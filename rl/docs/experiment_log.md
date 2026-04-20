@@ -1356,3 +1356,44 @@ To push past 0.65 we probably need one of:
    prediction) so the policy can condition its strategy on who it's
    playing. This is the principled way to recover the exploitation
    capacity FF-E10-pinning destroyed.
+
+
+## E18 — scaled E11a recipe (in progress, 2026-04-21)
+
+**Hypothesis.** The 0.65 hack-obs ceiling (E11a 0.646, FF-E10 0.654)
+may be a *learning capacity* limit of a 128-hidden GRU at 3M steps
+rather than a structural game ceiling. With every "robust training"
+intervention (FF-E10 pinning, honest obs, aux loss) landing at ~0.60
+instead, pushing the exploit side deserves a proper scaling test
+before declaring the ceiling structural.
+
+**Config.** `ppo_recurrent`, **hack obs**, **rule-based-only league**
+(no `--extra-opponent-ckpts`), fresh seed=9, **hidden=256 / embed=256**
+(4× more params than E11a), **10M total timesteps** (3.3× longer than
+E11a). Other hyperparameters match E11a/E16: num_envs=32,
+num_steps=128, num_minibatches=4, update_epochs=4, lr=3e-4 with
+default anneal, ent_coef=0.01, gamma=0.995,
+`--scenario-replay-prob 0.30`, `--eval-every 10`, `--eval-episodes
+100`, `--snapshot-every 20`. Running on beeline GPU 1 (H100 80GB,
+pid 3891824). Wall time estimate: ~130 min total (captures larger
+model + longer run + eval overhead).
+
+**Predictions — what to look for on the 500-ep final eval:**
+
+- **Strong positive (0.68 – 0.72 vs `strong_baseline`):** scaling
+  works; capacity *was* the bottleneck. Next: scale further
+  (hidden=384, 20M steps) and consider opponent embeddings (E19).
+- **Modest positive (0.66 – 0.68):** real but small; 0.65 is
+  close to the true ceiling. E19 (opponent embedding) likely the
+  bigger win than further scaling.
+- **Flat (0.63 – 0.66):** scaling doesn't help. 0.65 is structural
+  for this game under hack obs vs rule-based opponents. E19 becomes
+  the priority, and we should also revisit the game itself (are
+  we modeling the right distribution of opening shell counts?).
+- **Negative (<0.63):** bigger model overfits / destabilizes.
+  Report the result, switch back to hidden=128 and try E19 from
+  that base.
+
+Post-mortem will go below this stub. Intermediate eval every 40
+updates via `eval_every=10`, so the 100-ep training-eval trajectory
+will already hint at the answer before the 500-ep final.
