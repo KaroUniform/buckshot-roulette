@@ -373,6 +373,24 @@ def test_clone_preserves_rng_stream():
     print("ok  clone_preserves_rng_stream")
 
 
+def test_clone_preserves_honest_obs_flag():
+    """Regression: clone() uses __new__ and copies fields explicitly, so it
+    must remember to carry honest_obs. Otherwise observation() raises
+    AttributeError on the cloned engine."""
+    for flag in (False, True):
+        e1 = BuckshotEngine(seed=42, honest_obs=flag)
+        e1.reset()
+        e2 = e1.clone()
+        _assert(e2.honest_obs == flag, f"honest_obs={flag} must survive clone")
+        obs1 = e1.observation(e1.state.current_player)
+        obs2 = e2.observation(e2.state.current_player)
+        _assert(obs1.shape == obs2.shape,
+                f"clone obs shape diverges under honest_obs={flag}")
+        _assert(np.array_equal(obs1, obs2),
+                f"clone obs content diverges under honest_obs={flag}")
+    print("ok  clone_preserves_honest_obs_flag")
+
+
 def test_handsaw_survives_beer_reload_mid_turn():
     """Regression: if the player saws, then beers the last shell (forcing a
     mid-turn chamber reload), the saw's damage_mult must persist — the saw

@@ -171,24 +171,6 @@ def _slot0_known(obs: np.ndarray) -> tuple[bool, Optional[bool]]:
     return False, None
 
 
-def _known_live_positions(obs: np.ndarray, n_shells: int) -> list[int]:
-    """Positions (0-indexed) where we know the shell is live."""
-    out = []
-    for i in range(min(n_shells, _MAX_SHELLS)):
-        if obs[_KNOWN_LIVE_OFFSET + i] > 0.5:
-            out.append(i)
-    return out
-
-
-def _known_blank_positions(obs: np.ndarray, n_shells: int) -> list[int]:
-    """Positions (0-indexed) where we know the shell is blank."""
-    out = []
-    for i in range(min(n_shells, _MAX_SHELLS)):
-        if obs[_KNOWN_BLANK_OFFSET + i] > 0.5:
-            out.append(i)
-    return out
-
-
 def _prob_live(obs: np.ndarray) -> float:
     """P(next shell is live) given public counts and any revealed knowledge
     about the next shell specifically. Ignores information about later shells
@@ -233,14 +215,6 @@ def _opp_has(obs: np.ndarray, item: Item) -> bool:
 
 def _me_has(obs: np.ndarray, item: Item) -> bool:
     return obs[_INV_OFFSET + int(item)] > 0.5
-
-
-def _me_count(obs: np.ndarray, item: Item) -> int:
-    return int(round(float(obs[_INV_OFFSET + int(item)])))
-
-
-def _opp_count(obs: np.ndarray, item: Item) -> int:
-    return int(round(float(obs[_OPP_INV_OFFSET + int(item)])))
 
 
 def _can_one_shot_opp(obs: np.ndarray, with_saw: bool) -> bool:
