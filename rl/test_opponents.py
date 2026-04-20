@@ -496,66 +496,92 @@ def test_strong_baseline_in_named_opponents_registry():
     print("ok  strong_baseline_in_named_opponents_registry")
 
 
-def test_rule_based_opponents_work_under_honest_obs():
-    """Rule-based baselines read obs scalars at fixed hack-layout offsets; if
-    the env is in honest_obs mode, they must transparently see a collapsed
-    hack view. Verify each baseline picks a legal action across many honest
-    obs samples from a real engine.
-    """
-    from rl.engine import BuckshotEngine
+def test_rule_based_opponents_declare_hack_layout():
+    """Rule-based baselines read obs scalars at fixed hack-layout offsets, so
+    each must declare `obs_layout = 'hack'`. The env uses this to fetch a
+    matching obs from the engine even when the agent is on honest obs."""
     from rl.opponents import (
         aggressive_opponent,
         conservative_opponent,
+        random_opponent,
         strong_baseline_opponent,
     )
-    rng = np.random.default_rng(0)
-    for opp_fn in (aggressive_opponent, conservative_opponent, strong_baseline_opponent):
-        e = BuckshotEngine(seed=1, honest_obs=True)
-        e.reset()
-        steps = 0
-        while not e.state.done and steps < 100:
-            pid = e.state.current_player
-            obs = e.observation(pid)
-            _assert(obs.shape[0] == 52, f"honest obs should be 52-dim, got {obs.shape[0]}")
-            mask = e.legal_actions()
-            action = opp_fn(obs, mask, rng)
-            _assert(mask[action], f"{opp_fn.__name__} picked illegal action {action}")
-            e.step(int(action))
-            steps += 1
-    print("ok  rule_based_opponents_work_under_honest_obs")
+    for fn in (
+        random_opponent,
+        aggressive_opponent,
+        conservative_opponent,
+        strong_baseline_opponent,
+    ):
+        _assert(getattr(fn, "obs_layout", None) == "hack",
+                f"{fn.__name__} must declare obs_layout='hack'")
+    print("ok  rule_based_opponents_declare_hack_layout")
 
 
-def test_as_hack_obs_preserves_invariants():
-    """_as_hack_obs(honest_obs) should produce a 47-dim vector whose derived
-    n_live/n_blank equal the true remaining chamber counts under no-inverter
-    play, and whose inventory/known_shells blocks match the engine's hack-mode
-    output for the same state.
-    """
+def test_observation_layout_override():
+    """engine.observation(pid, layout=...) must force the requested layout
+    regardless of the engine's honest_obs flag. This is the mechanism the
+    env uses to give a hack-layout obs to a hack-trained opponent while
+    feeding a honest-layout obs to the agent in the same episode."""
     from rl.engine import BuckshotEngine
-    from rl.opponents import _as_hack_obs
+    for flag in (False, True):
+        e = BuckshotEngine(seed=7, honest_obs=flag)
+        e.reset()
+        pid = e.state.current_player
+        hack = e.observation(pid, layout="hack")
+        honest = e.observation(pid, layout="honest")
+        _assert(hack.shape[0] == 47, f"forced hack must be 47-dim (honest_obs={flag})")
+        _assert(honest.shape[0] == 52, f"forced honest must be 52-dim (honest_obs={flag})")
+        # Hack-layout obs carries the TRUE post-event n_live/n_blank from the
+        # engine state, independent of any deriving from counters — this is
+        # exactly what the INVERTER-bias fix restores for rule-based opponents
+        # that were previously getting a derived (biased) view in honest envs.
+        n_live_true = sum(1 for x in e.state.shells if x)
+        _assert(abs(float(hack[5]) - n_live_true) < 1e-6,
+                f"hack obs n_live={hack[5]} must equal true {n_live_true}")
+        default = e.observation(pid)
+        expected_len = 52 if flag else 47
+        _assert(default.shape[0] == expected_len,
+                f"layout=None must follow engine.honest_obs; got {default.shape[0]} "
+                f"for honest_obs={flag}")
+    print("ok  observation_layout_override")
 
-    e_honest = BuckshotEngine(seed=42, honest_obs=True)
-    s_honest = e_honest.reset()
-    obs_honest = e_honest.observation(s_honest.current_player)
-    collapsed = _as_hack_obs(obs_honest)
-    _assert(collapsed.shape[0] == 47, f"collapsed should be 47-dim, got {collapsed.shape[0]}")
-    n_live_true = sum(1 for x in s_honest.shells if x)
-    n_blank_true = len(s_honest.shells) - n_live_true
-    _assert(abs(float(collapsed[5]) - n_live_true) < 1e-6,
-            f"derived n_live={collapsed[5]} != true {n_live_true}")
-    _assert(abs(float(collapsed[6]) - n_blank_true) < 1e-6,
-            f"derived n_blank={collapsed[6]} != true {n_blank_true}")
-    # Hack-obs from the same engine state should match our collapsed view on
-    # every slot (inventory block, known_shells block, damage_mult, cuffs, etc).
-    e_hack = BuckshotEngine(seed=42)
-    s_hack = e_hack.reset()
-    obs_hack = e_hack.observation(s_hack.current_player)
-    _assert(obs_hack.shape[0] == 47, "hack obs should be 47-dim")
-    # Same seed → identical chamber and inventories.
-    _assert(np.allclose(collapsed, obs_hack, atol=1e-6),
-            f"collapsed honest obs must match hack obs for same state; max diff "
-            f"= {np.max(np.abs(collapsed - obs_hack))}")
-    print("ok  as_hack_obs_preserves_invariants")
+
+def test_env_routes_hack_layout_to_rule_based_opponent_under_honest_obs():
+    """Integration: SingleAgentBuckshotEnv with honest_obs=True must hand a
+    hack-layout obs to a rule-based opponent (declared 'hack') while the
+    agent sees honest. Regression test for the INVERTER bias fix: previously
+    a handcrafted honest->hack collapse was called inside the opponent fn
+    and mis-derived n_live/n_blank after inverter uses."""
+    from rl.opponents import OpponentPool
+    from rl.single_agent_env import SingleAgentBuckshotEnv
+
+    captured: list[np.ndarray] = []
+
+    def probe_opponent(obs, mask, rng):
+        captured.append(obs.copy())
+        legal = np.flatnonzero(mask)
+        return int(rng.choice(legal))
+
+    probe_opponent.obs_layout = "hack"
+
+    pool = OpponentPool({"probe": probe_opponent})
+    env = SingleAgentBuckshotEnv(opponent_pool=pool, honest_obs=True)
+    env.reset(seed=1234)
+    steps = 0
+    while steps < 50 and not env.engine.state.done:
+        mask = env.engine.legal_actions()
+        legal = np.flatnonzero(mask)
+        env.step(int(legal[0]))
+        steps += 1
+    _assert(len(captured) > 0, "opponent should have been called at least once")
+    for obs in captured:
+        _assert(obs.shape[0] == 47,
+                f"env must pass 47-dim hack obs to a 'hack' opponent; got {obs.shape[0]}")
+    # Also verify the agent's own obs was 52-dim honest.
+    agent_obs = env.engine.observation(env._agent_pid_this_ep)
+    _assert(agent_obs.shape[0] == 52,
+            "agent must still receive 52-dim honest obs even when opponent gets hack")
+    print("ok  env_routes_hack_layout_to_rule_based_opponent_under_honest_obs")
 
 
 # ----------------------------------------------------------------------
@@ -588,8 +614,9 @@ def main() -> int:
         # registry
         test_strong_baseline_in_named_opponents_registry,
         # honest-obs compatibility
-        test_rule_based_opponents_work_under_honest_obs,
-        test_as_hack_obs_preserves_invariants,
+        test_rule_based_opponents_declare_hack_layout,
+        test_observation_layout_override,
+        test_env_routes_hack_layout_to_rule_based_opponent_under_honest_obs,
     ]
     failures = 0
     for t in tests:

@@ -339,13 +339,21 @@ class SingleAgentBuckshotEnv(gym.Env):
         return {"observation": obs, "action_mask": mask}
 
     def _play_opponent_until_agent_turn(self) -> tuple[bool, float]:
-        """Run opponent moves while it's their turn. Returns (terminated, reward)."""
+        """Run opponent moves while it's their turn. Returns (terminated, reward).
+
+        Honors an opponent's declared `obs_layout` attribute so the obs we
+        hand it matches what the opponent was written/trained for. This
+        decouples the opponent's required layout from the agent's — e.g. a
+        rule-based opponent ("hack") can coexist with an honest-obs agent in
+        the same env without a lossy/biased layout conversion.
+        """
+        opp_layout = getattr(self._opp_fn, "obs_layout", None)
         while (
             not self.engine.state.done
             and self.engine.state.current_player != self._agent_pid_this_ep
         ):
             opp_pid = 1 - self._agent_pid_this_ep
-            obs = self.engine.observation(opp_pid).astype(np.float32)
+            obs = self.engine.observation(opp_pid, layout=opp_layout).astype(np.float32)
             mask = self.engine.legal_actions().astype(np.int8)
             if not mask.any():
                 # Shouldn't happen with current engine; safety net

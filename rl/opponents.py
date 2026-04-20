@@ -46,54 +46,17 @@ _KNOWN_BLANK_OFFSET = _KNOWN_LIVE_OFFSET + _MAX_SHELLS  # 39
 
 # Honest-obs layout (52-dim): core section is 18 scalars wide (5 extra for the
 # event counters), followed by the same inventory / known-shells blocks.
-# Rule-based opponents below are written against the 47-dim hack layout, so
-# whenever they receive a honest obs we collapse it back to a hack view by
-# deriving n_live/n_blank from the public event counters. This keeps the
-# opponent strategies identical regardless of which agent they play against.
+#
+# Rule-based opponents below are written against the 47-dim hack layout and
+# expose `obs_layout = "hack"`. The env (`SingleAgentBuckshotEnv`) reads that
+# attribute and asks the engine for a hack-layout obs for the opponent, even
+# when the agent itself is on honest obs. Reason: an earlier hand-crafted
+# honest→hack collapse that derived `n_live/n_blank` from event counters was
+# off by up to ±inverter_uses after any INVERTER, since the honest obs
+# deliberately hides the (private) flip direction. Rather than leak info or
+# silently corrupt the rule-based baselines, we let opponents declare their
+# required layout and route accordingly.
 _HONEST_OBS_DIM = 52
-
-
-def _as_hack_obs(obs: np.ndarray) -> np.ndarray:
-    """Return a 47-dim hack-layout obs, computing n_live/n_blank from counters
-    when the input is the 52-dim honest layout. No-op when already hack.
-
-    Inverter uses add ±1 uncertainty on the chamber; rule-based opponents
-    treat the derived counts as point estimates, which is the same bias they
-    operate under in hack mode (the hack obs also reflects engine state even
-    after inverters). Good enough for a baseline; neural opponents get their
-    native layout elsewhere.
-    """
-    if obs.shape[0] < _HONEST_OBS_DIM:
-        return obs
-    # Honest-layout scalar slots (must match engine.observation()'s honest branch):
-    # 0..4: hp/maxhp/opp_hp/opp_max/n_shells (same as hack)
-    # 5: damage_mult; 6: is_my_turn; 7: opp_cuffed; 8: my_cuffed; 9: adrenaline
-    # 10: reserved 0.0; 11: init_live; 12: init_blank;
-    # 13/14: shots_fired_{live,blank}; 15/16: beer_ejected_{live,blank};
-    # 17: inverter_uses
-    n_live = max(0.0, float(obs[11]) - float(obs[13]) - float(obs[15]))
-    n_blank = max(0.0, float(obs[12]) - float(obs[14]) - float(obs[16]))
-    core = np.array(
-        [
-            obs[0],   # my_hp
-            obs[1],   # my_max_hp
-            obs[2],   # opp_hp
-            obs[3],   # opp_max_hp
-            obs[4],   # n_shells
-            n_live,   # derived
-            n_blank,  # derived
-            obs[5],   # damage_mult
-            obs[6],   # is_my_turn
-            obs[7],   # opp_cuffed
-            obs[8],   # my_cuffed
-            obs[9],   # adrenaline_active
-            obs[10],  # reserved 0.0
-        ],
-        dtype=np.float32,
-    )
-    # Inventory + known_shells tail is unchanged, just starts 5 scalars later.
-    tail = obs[18:]
-    return np.concatenate([core, tail])
 
 
 def random_opponent(obs: np.ndarray, mask: np.ndarray, rng: np.random.Generator) -> int:
@@ -101,16 +64,21 @@ def random_opponent(obs: np.ndarray, mask: np.ndarray, rng: np.random.Generator)
     return int(rng.choice(legal))
 
 
+random_opponent.obs_layout = "hack"  # type: ignore[attr-defined]
+
+
 def aggressive_opponent(obs: np.ndarray, mask: np.ndarray, rng: np.random.Generator) -> int:
     """Always shoot opponent; prefer handsaw before shooting; otherwise shoot.
     No info-gathering, no self-shots. A "rush" baseline."""
-    obs = _as_hack_obs(obs)
     if mask[int(Action.USE_HANDSAW)] and obs[_O_DAMAGE_MULT] < 2:
         return int(Action.USE_HANDSAW)
     if mask[int(Action.SHOOT_OPPONENT)]:
         return int(Action.SHOOT_OPPONENT)
     legal = np.flatnonzero(mask)
     return int(rng.choice(legal))
+
+
+aggressive_opponent.obs_layout = "hack"  # type: ignore[attr-defined]
 
 
 def conservative_opponent(obs: np.ndarray, mask: np.ndarray, rng: np.random.Generator) -> int:
@@ -120,7 +88,6 @@ def conservative_opponent(obs: np.ndarray, mask: np.ndarray, rng: np.random.Gene
     This mirrors the popular wisdom from the Buckshot Roulette community,
     so the trained agent should be able to *exploit* it if it learns nuance.
     """
-    obs = _as_hack_obs(obs)
     n_live = obs[_O_N_LIVE]
     n_blank = obs[_O_N_BLANK]
     my_hp = obs[_O_MY_HP]
@@ -154,6 +121,9 @@ def conservative_opponent(obs: np.ndarray, mask: np.ndarray, rng: np.random.Gene
     # Fallback
     legal = np.flatnonzero(mask)
     return int(rng.choice(legal))
+
+
+conservative_opponent.obs_layout = "hack"  # type: ignore[attr-defined]
 
 
 # ---- Strong rule-based baseline ----
@@ -722,11 +692,13 @@ def strong_baseline_opponent(
       * BEER/INVERTER on known-live is the 'survival' play the research notes
         flagged as the gap even 5M-step PPO champions miss.
     """
-    obs = _as_hack_obs(obs)
     action = _strong_baseline_decision(obs, mask, rng)
     if action < 0 or not mask[action]:
         return _fallback(mask, rng)
     return int(action)
+
+
+strong_baseline_opponent.obs_layout = "hack"  # type: ignore[attr-defined]
 
 
 # Registry for easy lookup
@@ -745,36 +717,29 @@ def make_frozen_policy_opponent(policy, device: str = "cpu") -> OpponentFn:
     A fresh forward pass is run per call — fine for training collectors but
     avoid calling on huge batches; vectorize at the env level instead.
 
-    Layout compatibility: if the env is running honest_obs mode (52-dim) but
-    this FF policy was trained on the 47-dim hack obs, we transparently
-    collapse the obs before feeding it to the net. The reverse direction
-    (47-dim net receiving a 52-dim frame) is NOT reconstructible — hack obs
-    lacks the initial-declaration and event counters — so an honest-trained
-    policy mis-plugged into a hack env would need the reverse adapter or
-    raise. In practice we only hit the first case: loading an old FF ckpt
-    as a league opponent for a recurrent-honest agent.
+    The returned callable sets `.obs_layout` based on the policy's input
+    width (47 → 'hack', 52 → 'honest'). `SingleAgentBuckshotEnv` reads this
+    attribute and asks the engine for the matching layout, so the opponent
+    always receives exactly the obs shape the policy was trained on.
     """
     import torch
 
     expected_dim = int(policy.body[0].in_features)
+    layout = "honest" if expected_dim == _HONEST_OBS_DIM else "hack"
 
     def fn(obs: np.ndarray, mask: np.ndarray, rng: np.random.Generator) -> int:
         if obs.shape[0] != expected_dim:
-            # Only the honest→hack collapse is safe (drops no info). Other
-            # mismatches signal a real configuration bug.
-            if expected_dim == 47 and obs.shape[0] == _HONEST_OBS_DIM:
-                obs = _as_hack_obs(obs)
-            else:
-                raise ValueError(
-                    f"FF opponent expects obs_dim={expected_dim} but got "
-                    f"{obs.shape[0]}; cannot convert between these layouts."
-                )
+            raise ValueError(
+                f"FF opponent expects obs_dim={expected_dim} but got "
+                f"{obs.shape[0]} — env should have routed {layout} layout."
+            )
         with torch.no_grad():
             obs_t = torch.from_numpy(obs).to(device).unsqueeze(0)
             mask_t = torch.from_numpy(mask).to(device).unsqueeze(0)
             action = policy.act(obs_t, mask_t)
         return int(action.item())
 
+    fn.obs_layout = layout  # type: ignore[attr-defined]
     return fn
 
 
@@ -791,9 +756,9 @@ class _FrozenRecurrentOpponent:
         self.policy = policy
         self.device = device
         self._h = None  # lazy-init on first call once we know batch=1
-        # Cache expected obs dim so we can transparently collapse a honest env's
-        # 52-dim obs into 47-dim when the snapshot was trained on hack obs.
         self._expected_dim = int(policy.obs_dim)
+        # Declared to the env so it can fetch a matching-layout obs.
+        self.obs_layout = "honest" if self._expected_dim == _HONEST_OBS_DIM else "hack"
 
     def __call__(
         self, obs: np.ndarray, mask: np.ndarray, rng: np.random.Generator
@@ -801,13 +766,11 @@ class _FrozenRecurrentOpponent:
         import torch
 
         if obs.shape[0] != self._expected_dim:
-            if self._expected_dim == 47 and obs.shape[0] == _HONEST_OBS_DIM:
-                obs = _as_hack_obs(obs)
-            else:
-                raise ValueError(
-                    f"Recurrent opponent expects obs_dim={self._expected_dim} "
-                    f"but got {obs.shape[0]}."
-                )
+            raise ValueError(
+                f"Recurrent opponent expects obs_dim={self._expected_dim} "
+                f"but got {obs.shape[0]} — env should have routed "
+                f"{self.obs_layout} layout."
+            )
         obs_t = torch.from_numpy(obs).to(self.device).unsqueeze(0)
         mask_t = torch.from_numpy(mask).to(self.device).unsqueeze(0)
         if self._h is None:
@@ -830,10 +793,13 @@ def make_frozen_recurrent_opponent_factory(policy, device: str = "cpu") -> Calla
     sample the same recurrent snapshot.
     """
 
+    layout = "honest" if int(policy.obs_dim) == _HONEST_OBS_DIM else "hack"
+
     def factory() -> _FrozenRecurrentOpponent:
         return _FrozenRecurrentOpponent(policy, device=device)
 
     factory._is_factory = True  # type: ignore[attr-defined]
+    factory.obs_layout = layout  # type: ignore[attr-defined]
     return factory
 
 

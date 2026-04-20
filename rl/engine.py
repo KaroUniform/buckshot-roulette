@@ -326,23 +326,30 @@ class BuckshotEngine:
 
     # ---- observation ----
 
-    def observation(self, player_id: int) -> np.ndarray:
+    def observation(self, player_id: int, *, layout: Optional[str] = None) -> np.ndarray:
         """Per-player observation tensor.
 
-        Two layouts, selected by the engine's honest_obs flag:
+        Two layouts, selected by the engine's honest_obs flag (or the
+        explicit `layout=` override):
 
-          - honest_obs=False (default, 47-dim): includes public n_live/n_blank
-            for the remaining chamber. This simplification is a handhold for
+          - 'hack' (47-dim): includes public n_live/n_blank for the
+            remaining chamber. This simplification is a handhold for
             feedforward policies; the real game does not announce current
             chamber composition, so a policy using these slots is operating
             on privileged info. Kept for compatibility with E1-E10 checkpoints.
 
-          - honest_obs=True (52-dim): strips n_live/n_blank and injects the
+          - 'honest' (52-dim): strips n_live/n_blank and injects the
             seven per-round public event counters (initial L/B declaration,
             shots_fired_live/blank, beer_ejected_live/blank, inverter_uses).
             A recurrent policy must integrate these into its own chamber
             belief; after odd-count inverter uses, the belief is correctly
             ambiguous by ±1, matching what a human player sees.
+
+        `layout=None` picks based on self.honest_obs. Explicit 'hack' or
+        'honest' overrides the engine default — used by the env when the
+        policy's configured layout differs from the layout an opponent
+        needs (e.g. honest-env agent + rule-based opponent that wants
+        true post-inverter counts).
 
         Hides in both modes:
           - Exact shell order
@@ -370,7 +377,16 @@ class BuckshotEngine:
                 else:
                     known_blank[pos] = 1.0
 
-        if self.honest_obs:
+        if layout is None:
+            use_honest = self.honest_obs
+        elif layout == "honest":
+            use_honest = True
+        elif layout == "hack":
+            use_honest = False
+        else:
+            raise ValueError(f"layout must be None, 'hack', or 'honest'; got {layout!r}")
+
+        if use_honest:
             # Honest layout: no n_live/n_blank. Event counters go in their place.
             core = np.array(
                 [
