@@ -148,12 +148,18 @@ def train(
                         if "aux_head.weight" in state
                         else 0
                     )
+                    n_opponents = (
+                        int(state["opponent_embed.weight"].shape[0])
+                        if "opponent_embed.weight" in state
+                        else 0
+                    )
                     net = RecurrentActorCritic(
                         obs_dim,
                         NUM_ACTIONS,
                         hidden=hidden,
                         embed=embed_dim,
                         aux_dim=aux_dim,
+                        n_opponents=n_opponents,
                     ).to(device)
                     net.load_state_dict(state)
                     net.eval()

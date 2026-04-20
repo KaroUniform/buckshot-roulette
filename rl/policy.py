@@ -110,19 +110,33 @@ class RecurrentActorCritic(nn.Module):
         hidden: int = 128,
         embed: int | None = None,
         aux_dim: int = 0,
+        n_opponents: int = 0,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.n_actions = n_actions
         self.hidden = hidden
         self.aux_dim = aux_dim
+        self.n_opponents = n_opponents
         # Embed obs into a hidden-sized vector before the GRU. Keeps GRU input
         # dimension uniform so hidden size is the only capacity knob.
         embed_dim = embed if embed is not None else hidden
+        self.embed_dim = embed_dim
         self.obs_embed = nn.Sequential(
             _orthogonal_init(nn.Linear(obs_dim, embed_dim)),
             nn.Tanh(),
         )
+        # Optional opponent-id embedding. Added (not concatenated) to the obs
+        # embedding so the GRU's input_size stays at embed_dim — this keeps
+        # the checkpoint shape compatible with the non-embedded variant
+        # except for the extra `opponent_embed.weight` tensor. Init at a
+        # smaller scale than obs_embed (std=0.1) so training starts close to
+        # the no-opponent-id behavior and the signal grows as the trunk
+        # benefits from conditioning.
+        self.opponent_embed: Optional[nn.Embedding] = None
+        if n_opponents > 0:
+            self.opponent_embed = nn.Embedding(n_opponents, embed_dim)
+            nn.init.orthogonal_(self.opponent_embed.weight, 0.1)
         # Single-layer GRU. Multi-layer doesn't help here — episodes are short
         # and the task is information integration, not hierarchical.
         self.gru = nn.GRU(
@@ -167,9 +181,17 @@ class RecurrentActorCritic(nn.Module):
     def initial_hidden(self, batch_size: int, device: torch.device | str = "cpu") -> torch.Tensor:
         return torch.zeros(1, batch_size, self.hidden, device=device)
 
-    def _step(self, obs: torch.Tensor, h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _step(
+        self,
+        obs: torch.Tensor,
+        h: torch.Tensor,
+        opp_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # obs: (B, obs_dim) — returns body (B, hidden), new h (1, B, hidden)
-        x = self.obs_embed(obs).unsqueeze(0)  # (1, B, E)
+        emb = self.obs_embed(obs)  # (B, E)
+        if self.opponent_embed is not None and opp_ids is not None:
+            emb = emb + self.opponent_embed(opp_ids)
+        x = emb.unsqueeze(0)  # (1, B, E)
         y, new_h = self.gru(x, h)
         return y.squeeze(0), new_h
 
@@ -178,11 +200,12 @@ class RecurrentActorCritic(nn.Module):
         obs: torch.Tensor,
         h: torch.Tensor,
         done_prev: torch.Tensor,
+        opp_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # done_prev: (B,), 1 if previous step terminated an episode
         reset = done_prev.view(1, -1, 1).to(h.dtype)
         h = h * (1.0 - reset)
-        body, new_h = self._step(obs, h)
+        body, new_h = self._step(obs, h, opp_ids=opp_ids)
         return self.actor(body), self.critic(body).squeeze(-1), new_h
 
     def forward_sequence(
@@ -191,6 +214,7 @@ class RecurrentActorCritic(nn.Module):
         h_init: torch.Tensor,
         dones_seq: torch.Tensor,
         return_aux: bool = False,
+        opp_ids_seq: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ...]:
         """Process a (T, B) sequence with correct mid-sequence resets.
 
@@ -202,6 +226,9 @@ class RecurrentActorCritic(nn.Module):
         per-timestep aux prediction tensor (T, B, aux_dim). Returned as a
         third element of the tuple. With return_aux=True but no aux_head,
         the third element is None.
+
+        opp_ids_seq: optional (T, B) int64 tensor of opponent ids for the
+        step; ignored when the policy has no opponent embedding.
         """
         T, B = obs_seq.shape[:2]
         h = h_init
@@ -211,7 +238,8 @@ class RecurrentActorCritic(nn.Module):
         for t in range(T):
             reset = dones_seq[t].view(1, B, 1).to(h.dtype)
             h = h * (1.0 - reset)
-            body, h = self._step(obs_seq[t], h)
+            opp_t = opp_ids_seq[t] if opp_ids_seq is not None else None
+            body, h = self._step(obs_seq[t], h, opp_ids=opp_t)
             logits_list.append(self.actor(body))
             values_list.append(self.critic(body).squeeze(-1))
             if aux_list is not None:
@@ -230,8 +258,9 @@ class RecurrentActorCritic(nn.Module):
         h: torch.Tensor,
         done_prev: torch.Tensor,
         action: torch.Tensor | None = None,
+        opp_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits, value, new_h = self.forward_step(obs, h, done_prev)
+        logits, value, new_h = self.forward_step(obs, h, done_prev, opp_ids=opp_ids)
         masked_logits = logits.masked_fill(mask == 0, -1e8)
         dist = Categorical(logits=masked_logits)
         if action is None:
@@ -247,8 +276,9 @@ class RecurrentActorCritic(nn.Module):
         mask: torch.Tensor,
         h: torch.Tensor,
         done_prev: torch.Tensor,
+        opp_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        logits, _, new_h = self.forward_step(obs, h, done_prev)
+        logits, _, new_h = self.forward_step(obs, h, done_prev, opp_ids=opp_ids)
         masked_logits = logits.masked_fill(mask == 0, -1e8)
         return Categorical(logits=masked_logits).sample(), new_h
 
@@ -256,12 +286,13 @@ class RecurrentActorCritic(nn.Module):
 def load_recurrent_policy(
     path: str, n_actions: int, device: str = "cpu"
 ) -> RecurrentActorCritic:
-    """Load a RecurrentActorCritic from disk, auto-detecting obs_dim/hidden/aux_dim.
+    """Load a RecurrentActorCritic from disk, auto-detecting obs_dim/hidden/aux_dim/n_opponents.
 
     Detects layout from stored weight shapes:
-      - obs_embed.0.weight: (embed, obs_dim)
-      - gru.weight_ih_l0:   (3*hidden, embed)  -- GRU has 3 gates
-      - aux_head.weight:    (aux_dim, hidden)  -- absent for pre-E12b checkpoints
+      - obs_embed.0.weight:     (embed, obs_dim)
+      - gru.weight_ih_l0:       (3*hidden, embed)  -- GRU has 3 gates
+      - aux_head.weight:        (aux_dim, hidden)  -- absent for pre-E12b checkpoints
+      - opponent_embed.weight:  (n_opponents, embed) -- absent for pre-E19 checkpoints
     """
     state = torch.load(path, map_location=device, weights_only=True)
     w_embed = state["obs_embed.0.weight"]
@@ -269,8 +300,18 @@ def load_recurrent_policy(
     w_ih = state["gru.weight_ih_l0"]
     hidden = int(w_ih.shape[0] // 3)
     aux_dim = int(state["aux_head.weight"].shape[0]) if "aux_head.weight" in state else 0
+    n_opponents = (
+        int(state["opponent_embed.weight"].shape[0])
+        if "opponent_embed.weight" in state
+        else 0
+    )
     pol = RecurrentActorCritic(
-        obs_dim, n_actions, hidden=hidden, embed=embed_dim, aux_dim=aux_dim
+        obs_dim,
+        n_actions,
+        hidden=hidden,
+        embed=embed_dim,
+        aux_dim=aux_dim,
+        n_opponents=n_opponents,
     ).to(device)
     pol.load_state_dict(state)
     pol.eval()

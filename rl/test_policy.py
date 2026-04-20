@@ -250,6 +250,101 @@ def test_recurrent_aux_ckpt_backward_compat():
     print("ok  recurrent_aux_ckpt_backward_compat")
 
 
+def test_recurrent_opponent_embed_optional():
+    """n_opponents=0 (default) must leave opponent_embed as None and the forward
+    API backward compatible — opp_ids is ignored."""
+    obs_dim = 47
+    p = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, n_opponents=0)
+    _assert(p.opponent_embed is None, "n_opponents=0 should not construct opponent_embed")
+    B = 4
+    obs = torch.randn(B, obs_dim)
+    mask = torch.ones(B, NUM_ACTIONS, dtype=torch.int8)
+    h = p.initial_hidden(B)
+    done = torch.zeros(B)
+    # Passing opp_ids on a no-embedding model must be silently ignored.
+    opp_ids = torch.zeros(B, dtype=torch.long)
+    with torch.no_grad():
+        l1, v1, _ = p.forward_step(obs, h, done)
+        l2, v2, _ = p.forward_step(obs, h, done, opp_ids=opp_ids)
+    _assert(torch.allclose(l1, l2, atol=1e-6),
+            "opp_ids must be ignored when n_opponents=0")
+    _assert(torch.allclose(v1, v2, atol=1e-6),
+            "opp_ids must be ignored when n_opponents=0")
+    print("ok  recurrent_opponent_embed_optional")
+
+
+def test_recurrent_opponent_embed_changes_output():
+    """With n_opponents>0, different opp_ids must change logits (embedding is wired)."""
+    obs_dim = 47
+    torch.manual_seed(3)
+    p = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, n_opponents=5)
+    _assert(p.opponent_embed is not None, "n_opponents>0 should build opponent_embed")
+    _assert(p.opponent_embed.num_embeddings == 5 and
+            p.opponent_embed.embedding_dim == 32,
+            f"unexpected embedding shape: {p.opponent_embed.weight.shape}")
+    # Perturb embeddings so they're distinguishable (orthogonal(std=0.1) may
+    # leave the table nearly collinear for small n × small d).
+    with torch.no_grad():
+        p.opponent_embed.weight.normal_(mean=0.0, std=0.5)
+    B = 4
+    obs = torch.randn(B, obs_dim)
+    h = p.initial_hidden(B)
+    done = torch.zeros(B)
+    ids_a = torch.zeros(B, dtype=torch.long)
+    ids_b = torch.full((B,), 3, dtype=torch.long)
+    with torch.no_grad():
+        la, _, _ = p.forward_step(obs, h, done, opp_ids=ids_a)
+        lb, _, _ = p.forward_step(obs, h, done, opp_ids=ids_b)
+    _assert(not torch.allclose(la, lb, atol=1e-5),
+            "different opp_ids should change logits")
+    print("ok  recurrent_opponent_embed_changes_output")
+
+
+def test_recurrent_opponent_embed_gradients_flow():
+    """Gradients from loss must reach opponent_embed.weight when opp_ids are used."""
+    obs_dim = 47
+    torch.manual_seed(4)
+    p = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, n_opponents=5)
+    T, B = 5, 4
+    obs_seq = torch.randn(T, B, obs_dim)
+    dones_seq = torch.zeros(T, B)
+    h_init = p.initial_hidden(B)
+    opp_seq = torch.randint(0, 5, (T, B), dtype=torch.long)
+    logits_seq, values_seq = p.forward_sequence(
+        obs_seq, h_init, dones_seq, opp_ids_seq=opp_seq
+    )
+    loss = logits_seq.pow(2).mean() + values_seq.pow(2).mean()
+    loss.backward()
+    emb_grad = p.opponent_embed.weight.grad
+    _assert(emb_grad is not None and emb_grad.abs().sum().item() > 0,
+            "opponent_embed.weight.grad must be non-zero after backprop")
+    print(f"ok  recurrent_opponent_embed_gradients_flow "
+          f"(grad_norm={emb_grad.norm().item():.4f})")
+
+
+def test_recurrent_opponent_embed_ckpt_backward_compat():
+    """Pre-E19 checkpoints (no opponent_embed) load cleanly; E19 checkpoints
+    restore n_opponents via load_recurrent_policy."""
+    import tempfile, os
+    obs_dim = 47
+    p_old = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, n_opponents=0)
+    p_new = RecurrentActorCritic(obs_dim, NUM_ACTIONS, hidden=32, n_opponents=5)
+    with tempfile.TemporaryDirectory() as d:
+        old_path = os.path.join(d, "old.pt")
+        new_path = os.path.join(d, "new.pt")
+        torch.save(p_old.state_dict(), old_path)
+        torch.save(p_new.state_dict(), new_path)
+        r_old = load_recurrent_policy(old_path, NUM_ACTIONS, device="cpu")
+        r_new = load_recurrent_policy(new_path, NUM_ACTIONS, device="cpu")
+    _assert(r_old.opponent_embed is None and r_old.n_opponents == 0,
+            "old ckpt should load without opponent_embed")
+    _assert(r_new.opponent_embed is not None and r_new.n_opponents == 5,
+            f"new ckpt should restore n_opponents=5, got {r_new.n_opponents}")
+    _assert(r_new.opponent_embed.num_embeddings == 5,
+            f"n_opponents mismatch: {r_new.opponent_embed.num_embeddings}")
+    print("ok  recurrent_opponent_embed_ckpt_backward_compat")
+
+
 def test_recurrent_checkpoint_round_trip():
     """Train-time save/load must restore exact behavior."""
     import tempfile, os
@@ -290,6 +385,10 @@ def main() -> int:
         test_recurrent_aux_head_optional,
         test_recurrent_aux_head_shape_and_grad,
         test_recurrent_aux_ckpt_backward_compat,
+        test_recurrent_opponent_embed_optional,
+        test_recurrent_opponent_embed_changes_output,
+        test_recurrent_opponent_embed_gradients_flow,
+        test_recurrent_opponent_embed_ckpt_backward_compat,
         test_recurrent_checkpoint_round_trip,
     ]
     failures = 0
