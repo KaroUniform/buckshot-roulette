@@ -142,6 +142,17 @@ class GameState:
     # Wrappers compare before/after a step to detect reloads for survival
     # rewards.
     n_reloads: int = 0
+    # Public per-round counters used by the "honest" observation layout so a
+    # recurrent policy can integrate the same info a human player has access
+    # to (initial-chamber declaration + public shot / beer / inverter events).
+    # Always tracked; only consumed by observation() when honest_obs=True.
+    round_initial_live: int = 0
+    round_initial_blank: int = 0
+    shots_fired_live_this_round: int = 0
+    shots_fired_blank_this_round: int = 0
+    beer_ejected_live_this_round: int = 0
+    beer_ejected_blank_this_round: int = 0
+    inverter_uses_this_round: int = 0
 
 
 class BuckshotEngine:
@@ -153,10 +164,17 @@ class BuckshotEngine:
         hp_range: tuple = (2, 4),
         shells_range: tuple = (3, 6),
         items_per_round_choices: tuple = (1, 1, 1, 1, 2, 2, 2, 3, 3, 4),
+        honest_obs: bool = False,
     ) -> None:
         self.hp_range = hp_range
         self.shells_range = shells_range
         self.items_per_round_choices = items_per_round_choices
+        # honest_obs=True strips n_live/n_blank from the observation (which
+        # the real game never announces out loud) and replaces them with the
+        # initial-chamber declaration + public event counters. Memoryless
+        # policies will underperform; recurrent policies must integrate the
+        # event stream into a chamber belief themselves.
+        self.honest_obs = bool(honest_obs)
         self.rng = np.random.default_rng(seed)
         self.state: Optional[GameState] = None
 
@@ -310,21 +328,34 @@ class BuckshotEngine:
     def observation(self, player_id: int) -> np.ndarray:
         """Per-player observation tensor.
 
-        Hides:
-          - The exact shell order (only n_live, n_blank, total are visible)
-          - The opponent's per-shell knowledge
+        Two layouts, selected by the engine's honest_obs flag:
 
-        Reveals:
-          - Both HPs and inventories (perfect-information style for these)
-          - Own per-shell knowledge (positions where this player learned via items)
+          - honest_obs=False (default, 47-dim): includes public n_live/n_blank
+            for the remaining chamber. This simplification is a handhold for
+            feedforward policies; the real game does not announce current
+            chamber composition, so a policy using these slots is operating
+            on privileged info. Kept for compatibility with E1-E10 checkpoints.
+
+          - honest_obs=True (52-dim): strips n_live/n_blank and injects the
+            seven per-round public event counters (initial L/B declaration,
+            shots_fired_live/blank, beer_ejected_live/blank, inverter_uses).
+            A recurrent policy must integrate these into its own chamber
+            belief; after odd-count inverter uses, the belief is correctly
+            ambiguous by ±1, matching what a human player sees.
+
+        Hides in both modes:
+          - Exact shell order
+          - Opponent's per-shell knowledge
+
+        Reveals in both modes:
+          - Both HPs and inventories
+          - Own per-shell knowledge (glass/phone reveals)
           - Whose turn it is, current damage multiplier, adrenaline state
         """
         s = self.state
         me = s.players[player_id]
         opp = s.players[1 - player_id]
         n = len(s.shells)
-        n_live = sum(1 for live in s.shells if live)
-        n_blank = n - n_live
 
         # Obs width is fixed (not tied to shells_range) so trained checkpoints
         # stay compatible when the chamber-size range is tuned.
@@ -338,6 +369,44 @@ class BuckshotEngine:
                 else:
                     known_blank[pos] = 1.0
 
+        if self.honest_obs:
+            # Honest layout: no n_live/n_blank. Event counters go in their place.
+            core = np.array(
+                [
+                    me.hp,
+                    me.max_hp,
+                    opp.hp,
+                    opp.max_hp,
+                    n,
+                    s.damage_mult,
+                    int(s.current_player == player_id),
+                    int(opp.skip_next_turn),
+                    int(me.skip_next_turn),
+                    int(s.adrenaline_active),
+                    # Reserved slot parallels the 47-dim layout's reserved 0.
+                    0.0,
+                    s.round_initial_live,
+                    s.round_initial_blank,
+                    s.shots_fired_live_this_round,
+                    s.shots_fired_blank_this_round,
+                    s.beer_ejected_live_this_round,
+                    s.beer_ejected_blank_this_round,
+                    s.inverter_uses_this_round,
+                ],
+                dtype=np.float32,
+            )
+            parts = [
+                core,
+                me.inventory.astype(np.float32),
+                opp.inventory.astype(np.float32),
+                known_live,
+                known_blank,
+            ]
+            return np.concatenate(parts)
+
+        # Default 47-dim "hack" layout, unchanged.
+        n_live = sum(1 for live in s.shells if live)
+        n_blank = n - n_live
         parts = [
             np.array(
                 [
@@ -386,6 +455,18 @@ class BuckshotEngine:
         s.players[0].skip_next_turn = False
         s.players[1].skip_next_turn = False
         s.n_reloads += 1
+        # Honest-obs bookkeeping: the game announces the round's initial
+        # live/blank counts out loud when loading, and players track every
+        # subsequent shot / beer ejection / inverter use by ear. Reset the
+        # per-round counters here so a recurrent policy sees the same
+        # "chamber declaration → event stream" pattern a human hears.
+        s.round_initial_live = n_live
+        s.round_initial_blank = n_blank
+        s.shots_fired_live_this_round = 0
+        s.shots_fired_blank_this_round = 0
+        s.beer_ejected_live_this_round = 0
+        s.beer_ejected_blank_this_round = 0
+        s.inverter_uses_this_round = 0
         # Distribute items
         n_items = int(self.rng.choice(self.items_per_round_choices))
         for p in s.players:
@@ -411,10 +492,13 @@ class BuckshotEngine:
                 shifted[pos - 1] = val
             s.known_shells[k] = shifted
 
+        # Every shot is public: both players see live-vs-blank outcome.
         if live:
+            s.shots_fired_live_this_round += 1
             s.players[target].hp -= s.damage_mult
             info["shot"] = ("live", target, s.damage_mult)
         else:
+            s.shots_fired_blank_this_round += 1
             info["shot"] = ("blank", target, 0)
         s.damage_mult = 1
         return not live
@@ -475,6 +559,11 @@ class BuckshotEngine:
                         continue
                     shifted[pos - 1] = val
                 s.known_shells[k] = shifted
+            # Beer ejection is public (everyone sees the shell fly out).
+            if ejected_live:
+                s.beer_ejected_live_this_round += 1
+            else:
+                s.beer_ejected_blank_this_round += 1
             info["beer_ejected"] = "live" if ejected_live else "blank"
             if not s.shells:
                 # Beer that empties the chamber doesn't end the turn in the
@@ -528,6 +617,10 @@ class BuckshotEngine:
             for k in range(2):
                 if 0 in s.known_shells[k]:
                     s.known_shells[k][0] = not s.known_shells[k][0]
+            # Inverter use is public: both players see the item get used, and
+            # under honest-obs the upcoming-shot outcome becomes uncertain
+            # by ±1 live/blank for anyone who thought they knew the count.
+            s.inverter_uses_this_round += 1
 
         # A pick action consumes adrenaline; regular item uses don't touch it.
         # We intentionally DO NOT flip a "used non-adrenaline item" flag any

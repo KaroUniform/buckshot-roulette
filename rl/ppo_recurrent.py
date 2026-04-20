@@ -77,6 +77,7 @@ class RecurrentPPOConfig:
     heal_bonus: float = 0.0
     round_survive_bonus: float = 0.0
     scenario_replay_prob: float = 0.0
+    honest_obs: bool = False
     save_dir: str = "rl_runs"
     run_name: str = field(default_factory=lambda: f"ppo_recurrent_{int(time.time())}")
 
@@ -165,6 +166,7 @@ def train(
                 cfg.heal_bonus,
                 cfg.round_survive_bonus,
                 cfg.scenario_replay_prob,
+                cfg.honest_obs,
             )
             for i in range(cfg.num_envs)
         ]
@@ -399,6 +401,7 @@ def train(
                     n_episodes=cfg.eval_episodes,
                     seed=cfg.seed + update,
                     device=cfg.device,
+                    honest_obs=cfg.honest_obs,
                 )
                 for name, rate in wr.items():
                     log_entry[f"eval/winrate_vs_{name}"] = float(rate)
@@ -457,6 +460,13 @@ def parse_args() -> RecurrentPPOConfig:
     p.add_argument("--round-survive-bonus", type=float, default=0.0)
     p.add_argument("--scenario-replay-prob", type=float, default=0.0)
     p.add_argument(
+        "--honest-obs",
+        action="store_true",
+        help="Use 52-dim honest observation (no n_live/n_blank; only the "
+             "initial-chamber declaration + public event counters). Required "
+             "for testing whether memory+honest-info matches hack-info FF.",
+    )
+    p.add_argument(
         "--no-anneal-lr",
         action="store_true",
         help="Disable cosine LR anneal; see ppo.py E10 notes for why this helps "
@@ -485,6 +495,7 @@ def parse_args() -> RecurrentPPOConfig:
         heal_bonus=a.heal_bonus,
         round_survive_bonus=a.round_survive_bonus,
         scenario_replay_prob=a.scenario_replay_prob,
+        honest_obs=a.honest_obs,
         anneal_lr=not a.no_anneal_lr,
     )
     if a.run_name:

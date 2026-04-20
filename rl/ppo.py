@@ -118,6 +118,7 @@ def make_env_fn(
     heal_bonus: float = 0.0,
     round_survive_bonus: float = 0.0,
     scenario_replay_prob: float = 0.0,
+    honest_obs: bool = False,
 ):
     def thunk():
         env = SingleAgentBuckshotEnv(
@@ -128,6 +129,7 @@ def make_env_fn(
             heal_bonus=heal_bonus,
             round_survive_bonus=round_survive_bonus,
             scenario_replay_prob=scenario_replay_prob,
+            honest_obs=honest_obs,
         )
         env.reset(seed=seed)
         return env

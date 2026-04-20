@@ -460,6 +460,194 @@ def test_obs_size_matches_documented_layout():
     print(f"ok  obs_size_matches_documented_layout (size={obs.shape[0]})")
 
 
+def test_honest_obs_size_and_layout():
+    """honest_obs=True yields 52-dim obs (47 - 2 removed + 7 added).
+
+    Specifically: no n_live/n_blank slots; instead the seven per-round public
+    event counters sit in the core section. Invariant: counters start at zero
+    immediately after reset (no shots have been fired yet).
+    """
+    from rl.engine import _OBS_MAX_SHELLS
+    e = BuckshotEngine(seed=0, honest_obs=True)
+    e.reset()
+    obs = e.observation(0)
+    # 18 scalars + 9 own + 9 opp + 2*_OBS_MAX_SHELLS
+    expected = 18 + 9 + 9 + _OBS_MAX_SHELLS * 2
+    _assert(obs.shape == (expected,), f"Honest obs shape {obs.shape} != ({expected},)")
+    # Default (hack) obs should still be 47-dim.
+    e2 = BuckshotEngine(seed=0)
+    e2.reset()
+    _assert(e2.observation(0).shape == (47,), "Default obs must stay 47-dim")
+    print(f"ok  honest_obs_size_and_layout (honest={obs.shape[0]}, hack={e2.observation(0).shape[0]})")
+
+
+def test_honest_obs_initial_declaration_set_after_reset():
+    """After reset, round_initial_live/blank must match the loaded chamber,
+    and all per-round event counters must be zero."""
+    e = BuckshotEngine(seed=3, honest_obs=True)
+    s = e.reset()
+    n_live_actual = sum(1 for x in s.shells if x)
+    n_blank_actual = len(s.shells) - n_live_actual
+    _assert(s.round_initial_live == n_live_actual,
+            f"round_initial_live={s.round_initial_live} != actual {n_live_actual}")
+    _assert(s.round_initial_blank == n_blank_actual,
+            f"round_initial_blank={s.round_initial_blank} != actual {n_blank_actual}")
+    for f in ("shots_fired_live_this_round", "shots_fired_blank_this_round",
+              "beer_ejected_live_this_round", "beer_ejected_blank_this_round",
+              "inverter_uses_this_round"):
+        _assert(getattr(s, f) == 0, f"{f} must start at 0")
+    print("ok  honest_obs_initial_declaration_set_after_reset")
+
+
+def test_honest_obs_shot_counters_increment():
+    """Every shot must bump exactly one of shots_fired_{live,blank} by 1."""
+    e = BuckshotEngine(seed=0, honest_obs=True)
+    s = e.reset()
+    # Rig chamber: live-blank-live-blank-live (odd positions)
+    s.shells = [True, False, True, False, True]
+    s.round_initial_live = 3
+    s.round_initial_blank = 2
+    s.shots_fired_live_this_round = 0
+    s.shots_fired_blank_this_round = 0
+    starter = s.current_player
+    # Shoot opponent (live)
+    e.step(int(Action.SHOOT_OPPONENT))
+    _assert(s.shots_fired_live_this_round == 1,
+            f"after live shot: live_count={s.shots_fired_live_this_round}")
+    _assert(s.shots_fired_blank_this_round == 0, "blank_count must stay 0")
+    # Next shell is blank; whoever's turn it is, shoot self (keeps turn)
+    actor = s.current_player
+    e.step(int(Action.SHOOT_SELF))
+    _assert(s.shots_fired_blank_this_round == 1,
+            f"after blank self-shot: blank_count={s.shots_fired_blank_this_round}")
+    _assert(s.shots_fired_live_this_round == 1, "live_count must stay at 1")
+    print(f"ok  honest_obs_shot_counters_increment (starter={starter}, after_blank={actor})")
+
+
+def test_honest_obs_beer_counter_increments():
+    e = BuckshotEngine(seed=0, honest_obs=True)
+    s = e.reset()
+    s.shells = [False, True, True, False]  # blank first so beer ejects a blank
+    s.round_initial_live = 2
+    s.round_initial_blank = 2
+    s.shots_fired_live_this_round = 0
+    s.shots_fired_blank_this_round = 0
+    s.beer_ejected_live_this_round = 0
+    s.beer_ejected_blank_this_round = 0
+    s.players[s.current_player].inventory[int(Item.BEER)] = 1
+    e.step(int(Action.USE_BEER))
+    _assert(s.beer_ejected_blank_this_round == 1,
+            f"beer ejected blank, counter={s.beer_ejected_blank_this_round}")
+    _assert(s.beer_ejected_live_this_round == 0, "live beer counter must stay 0")
+    # Second beer ejects a live shell
+    s.players[s.current_player].inventory[int(Item.BEER)] = 1
+    e.step(int(Action.USE_BEER))
+    _assert(s.beer_ejected_live_this_round == 1,
+            f"beer ejected live, counter={s.beer_ejected_live_this_round}")
+    _assert(s.beer_ejected_blank_this_round == 1, "blank beer counter must hold at 1")
+    print("ok  honest_obs_beer_counter_increments")
+
+
+def test_honest_obs_inverter_counter_increments():
+    e = BuckshotEngine(seed=0, honest_obs=True)
+    s = e.reset()
+    s.shells = [True, False, True]
+    s.inverter_uses_this_round = 0
+    s.players[s.current_player].inventory[int(Item.INVERTER)] = 1
+    e.step(int(Action.USE_INVERTER))
+    _assert(s.inverter_uses_this_round == 1, f"inverter count={s.inverter_uses_this_round}")
+    # Second inverter on same shell flips it back; counter still climbs.
+    s.players[s.current_player].inventory[int(Item.INVERTER)] = 1
+    e.step(int(Action.USE_INVERTER))
+    _assert(s.inverter_uses_this_round == 2, f"inverter count={s.inverter_uses_this_round}")
+    print("ok  honest_obs_inverter_counter_increments")
+
+
+def test_honest_obs_counters_reset_on_new_round():
+    """When the chamber empties and a fresh round loads, all per-round counters
+    must reset to zero and the initial declaration must reflect the NEW round."""
+    e = BuckshotEngine(seed=0, honest_obs=True)
+    s = e.reset()
+    s.shells = [False]  # single blank; self-shot keeps turn AND forces reload
+    s.round_initial_live = 0
+    s.round_initial_blank = 1
+    s.shots_fired_live_this_round = 0
+    s.shots_fired_blank_this_round = 0
+    e.step(int(Action.SHOOT_SELF))
+    # Chamber emptied → _load_round ran → counters reset; initial L/B reflect new round.
+    _assert(s.shots_fired_live_this_round == 0, "shots_fired_live must reset")
+    _assert(s.shots_fired_blank_this_round == 0, "shots_fired_blank must reset")
+    _assert(s.round_initial_live + s.round_initial_blank == len(s.shells),
+            f"initial L+B ({s.round_initial_live}+{s.round_initial_blank}) != new chamber len {len(s.shells)}")
+    actual_live = sum(1 for x in s.shells if x)
+    _assert(s.round_initial_live == actual_live,
+            f"round_initial_live={s.round_initial_live} vs actual_live={actual_live}")
+    print("ok  honest_obs_counters_reset_on_new_round")
+
+
+def test_honest_obs_is_symmetric_across_players():
+    """All 7 per-round public counters sit at the same slot indices in both
+    players' observations (they're public info, so obs(0) and obs(1) agree
+    on those slots). Private fields (known_shells) may differ."""
+    e = BuckshotEngine(seed=4, honest_obs=True)
+    s = e.reset()
+    # Fire a couple of shots to exercise the counters.
+    for _ in range(3):
+        if s.done:
+            break
+        legal = np.where(e.legal_actions())[0]
+        if len(legal) == 0:
+            break
+        # Prefer shoot-opponent/self over items to make the test deterministic.
+        if int(Action.SHOOT_OPPONENT) in legal:
+            e.step(int(Action.SHOOT_OPPONENT))
+        else:
+            e.step(int(legal[0]))
+    o0 = e.observation(0)
+    o1 = e.observation(1)
+    # Honest-obs layout: core[11..17] are the 7 public counters.
+    _assert(np.array_equal(o0[11:18], o1[11:18]),
+            f"public counters must match across players: {o0[11:18]} vs {o1[11:18]}")
+    print(f"ok  honest_obs_is_symmetric_across_players (counters={o0[11:18].tolist()})")
+
+
+def test_honest_obs_respects_shell_invariant_under_no_inverter():
+    """Without inverter uses, the true chamber L/B equals:
+       initial_L - shots_fired_live - beer_ejected_live (same for blanks).
+    This is the invariant a recurrent policy's internal belief would maintain.
+    """
+    e = BuckshotEngine(seed=7, honest_obs=True)
+    s = e.reset()
+    # Drive random legal actions, avoiding INVERTER to preserve the invariant.
+    rng = np.random.default_rng(123)
+    for _ in range(80):
+        if s.done:
+            break
+        mask = e.legal_actions()
+        mask[int(Action.USE_INVERTER)] = False
+        mask[int(Action.PICK_INVERTER)] = False
+        legal = np.where(mask)[0]
+        if len(legal) == 0:
+            break
+        e.step(int(rng.choice(legal)))
+        # Invariant must hold every step (within the current round).
+        true_live = sum(1 for x in s.shells if x)
+        true_blank = len(s.shells) - true_live
+        derived_live = (s.round_initial_live
+                        - s.shots_fired_live_this_round
+                        - s.beer_ejected_live_this_round)
+        derived_blank = (s.round_initial_blank
+                         - s.shots_fired_blank_this_round
+                         - s.beer_ejected_blank_this_round)
+        _assert(derived_live == true_live and derived_blank == true_blank,
+                f"invariant broken: derived=({derived_live},{derived_blank})"
+                f" actual=({true_live},{true_blank})"
+                f" initial=({s.round_initial_live},{s.round_initial_blank})"
+                f" shots=({s.shots_fired_live_this_round},{s.shots_fired_blank_this_round})"
+                f" beer=({s.beer_ejected_live_this_round},{s.beer_ejected_blank_this_round})")
+    print("ok  honest_obs_respects_shell_invariant_under_no_inverter")
+
+
 def main() -> int:
     tests = [
         test_reset_is_deterministic_with_seed,
@@ -483,6 +671,14 @@ def main() -> int:
         test_handcuff_survives_round_reload_after_last_shot,
         test_handcuff_survives_beer_reload_mid_turn,
         test_obs_size_matches_documented_layout,
+        test_honest_obs_size_and_layout,
+        test_honest_obs_initial_declaration_set_after_reset,
+        test_honest_obs_shot_counters_increment,
+        test_honest_obs_beer_counter_increments,
+        test_honest_obs_inverter_counter_increments,
+        test_honest_obs_counters_reset_on_new_round,
+        test_honest_obs_is_symmetric_across_players,
+        test_honest_obs_respects_shell_invariant_under_no_inverter,
     ]
     failures = 0
     for t in tests:

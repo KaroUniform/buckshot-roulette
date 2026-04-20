@@ -135,6 +135,19 @@ class RecurrentActorCritic(nn.Module):
                 nn.init.constant_(param, 0.0)
         self.actor = _orthogonal_init(nn.Linear(hidden, n_actions), std=0.01)
         self.critic = _orthogonal_init(nn.Linear(hidden, 1), std=1.0)
+        # PyTorch emits a cudnn warning if weights aren't contiguous in memory
+        # (easy to trigger after .to(device) / deepcopy). Calling
+        # flatten_parameters here makes the first forward pass warning-free
+        # and slightly faster.
+        self.gru.flatten_parameters()
+
+    def _apply(self, fn):  # noqa: D401
+        # torch's Module._apply runs on .to(), .cuda(), .cpu() — re-flatten
+        # so moved/cloned modules don't re-trigger the warning.
+        out = super()._apply(fn)
+        if isinstance(self.gru, nn.GRU):
+            self.gru.flatten_parameters()
+        return out
 
     def initial_hidden(self, batch_size: int, device: torch.device | str = "cpu") -> torch.Tensor:
         return torch.zeros(1, batch_size, self.hidden, device=device)

@@ -43,6 +43,7 @@ class SingleAgentBuckshotEnv(gym.Env):
         heal_bonus: float = 0.0,
         round_survive_bonus: float = 0.0,
         scenario_replay_prob: float = 0.0,
+        honest_obs: bool = False,
     ) -> None:
         """
         hp_shaping: if > 0, adds dense per-step reward
@@ -99,11 +100,12 @@ class SingleAgentBuckshotEnv(gym.Env):
             mutations.
         """
         super().__init__()
-        self.engine = BuckshotEngine()
+        self.honest_obs = bool(honest_obs)
+        self.engine = BuckshotEngine(honest_obs=self.honest_obs)
         # Probe observation length on a throwaway engine so the real engine's
         # RNG isn't pinned to seed=0 (which would make seedless reset()s
         # repeat the same game forever across env instances).
-        _probe = BuckshotEngine()
+        _probe = BuckshotEngine(honest_obs=self.honest_obs)
         _probe.reset(seed=0)
         obs_len = _probe.observation(0).shape[0]
 
@@ -315,6 +317,18 @@ class SingleAgentBuckshotEnv(gym.Env):
         s.winner = None
         # n_reloads stays at whatever the engine's reset() set it to (0);
         # don't touch — round_survive_bonus uses the delta, not the absolute.
+        # 6. Honest-obs bookkeeping: the scenario overwrites the chamber, so
+        #    the initial-declaration + event counters set by _load_round no
+        #    longer reflect reality. Reset them to match the injected chamber
+        #    so the honest-obs invariant holds throughout the scenario.
+        n_live_scn = sum(1 for x in s.shells if x)
+        s.round_initial_live = n_live_scn
+        s.round_initial_blank = len(s.shells) - n_live_scn
+        s.shots_fired_live_this_round = 0
+        s.shots_fired_blank_this_round = 0
+        s.beer_ejected_live_this_round = 0
+        s.beer_ejected_blank_this_round = 0
+        s.inverter_uses_this_round = 0
 
     def _obs(self) -> dict:
         obs = self.engine.observation(self._agent_pid_this_ep).astype(np.float32)

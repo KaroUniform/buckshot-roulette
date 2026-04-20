@@ -21,6 +21,7 @@ def evaluate_policy(
     n_episodes: int = 200,
     seed: int = 12345,
     device: str = "cpu",
+    honest_obs: bool = False,
 ) -> dict[str, float]:
     """For each named opponent, return the policy's win rate.
 
@@ -32,7 +33,7 @@ def evaluate_policy(
 
     for name, fn in opponents.items():
         pool = OpponentPool({name: fn})
-        env = SingleAgentBuckshotEnv(opponent_pool=pool)
+        env = SingleAgentBuckshotEnv(opponent_pool=pool, honest_obs=honest_obs)
         wins = 0
         for ep in range(n_episodes):
             obs, info = env.reset(seed=int(rng.integers(0, 1_000_000_000)))
@@ -61,6 +62,7 @@ def evaluate_recurrent_policy(
     n_episodes: int = 200,
     seed: int = 12345,
     device: str = "cpu",
+    honest_obs: bool = False,
 ) -> dict[str, float]:
     """Like evaluate_policy but for RecurrentActorCritic.
 
@@ -72,7 +74,7 @@ def evaluate_recurrent_policy(
 
     for name, fn in opponents.items():
         pool = OpponentPool({name: fn})
-        env = SingleAgentBuckshotEnv(opponent_pool=pool)
+        env = SingleAgentBuckshotEnv(opponent_pool=pool, honest_obs=honest_obs)
         wins = 0
         for ep in range(n_episodes):
             obs, info = env.reset(seed=int(rng.integers(0, 1_000_000_000)))
