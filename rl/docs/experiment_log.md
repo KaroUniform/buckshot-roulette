@@ -525,16 +525,20 @@ of training. *This* is the regime we wanted.
 
 ### Why BEER is stickier than INVERTER
 
-Both actions have the same "mask is legal" status and similar raw
-state features. Candidate explanations:
+Both actions are legal and both keep the turn with the agent (BEER
+does *not* pass turn to opp — verified against `engine.py:_apply_item`
+and a direct step-level trace). The real asymmetry is about the
+*information* in the post-action state, not about who moves next.
 
-1. **Asymmetric downstream reward**: USE_INVERTER flips slot0 from
-   LIVE to BLANK, so the agent's *very next* action is SHOOT_SELF on
-   a now-blank shell → free turn, guaranteed survival, and possibly a
-   kill attempt with the next live. USE_BEER ejects slot0 entirely,
-   passes turn to opp. Opp acts next. From the actor's credit
-   perspective, INVERTER is a higher-immediate-value move in s*, so
-   the advantage is larger and easier to learn.
+1. **Downstream information asymmetry**: USE_INVERTER flips slot 0
+   from LIVE to BLANK, leaving a *known-blank* shell in slot 0. The
+   agent's next action is a guaranteed-safe SHOOT_SELF → free turn,
+   clean survival, and often a lethal setup next. USE_BEER ejects
+   slot 0; the new slot 0 is whatever was previously in slot 1 —
+   usually *unknown* in the probe scenario. So after BEER the agent
+   must act under uncertainty, which the critic scores lower. The
+   advantage A(s, BEER) is smaller than A(s, INVERTER), giving less
+   gradient pull to flip the prior.
 2. **Pre-training bias**: early in training SHOOT_OPPONENT beats
    everything against random-play (opp usually just dies), so all
    "shoot vs item" bandits start SHOOT-favored. Breaking that prior
