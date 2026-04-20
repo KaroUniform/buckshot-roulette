@@ -1019,3 +1019,135 @@ distribution changes.
    fails to break the 0.60 ceiling, consider: larger hidden size,
    attention over past events, or distributional value head. These are
    expensive and should wait until simpler interventions are exhausted.
+
+---
+
+## E13 — league fusion with FF-E10 as permanent opponent
+
+**Hypothesis:** the `strong_baseline` 0.60 ceiling persists across 3
+honest-obs seeds plus the aux-loss variant (E12b). FF-E10 is a
+qualitatively different opponent (feedforward, hack obs, self-play
+trained) that may expose exploit patterns rule-based baselines don't
+cover. Training against FF-E10 in the pool should either (a) push the
+policy past the `strong_baseline` plateau or (b) give us a first
+head-to-head number for honest-obs-recurrent vs hack-obs-feedforward.
+
+### Run config
+
+Identical to E12a/E12b except:
+- seed 7 (new)
+- `--extra-opponent-ckpts rl_runs/E10_escape_collapse/policy_final.pt`
+- no aux chamber loss
+
+FF-E10 joins the pool with `weight=1.0`, same as each rule-based
+opponent. Total pool grows from 4 → 5 at u1; with up to 8 snapshots the
+pool caps at 13, so FF-E10 appears as ~1/13 of encounters mid-run.
+Existing `obs_layout` routing auto-detected FF-E10's 47-dim hack layout
+and fed it the right observation per-episode (no code changes needed).
+
+Wall-clock: ~90 min on 1×H100.
+
+### Evaluation (500 eps/opponent, seed 20260420)
+
+| opp | E13 s7 | E12b s6 | E12a 3-seed mean | E11b |
+|---|---|---|---|---|
+| random | 0.936 ± 0.011 | 0.934 | 0.913 ± 0.006 | 0.922 |
+| aggressive | 0.800 ± 0.018 | 0.794 | 0.799 ± 0.018 | 0.822 |
+| conservative | 0.680 ± 0.021 | 0.706 | 0.696 ± 0.012 | 0.730 |
+| strong_baseline | **0.594 ± 0.022** | 0.594 | 0.594 ± 0.023 | 0.598 |
+| ff_e10 | **0.492 ± 0.022** | — | — | — |
+| mean of 4 standard opps | 0.753 | 0.757 | 0.751 | 0.768 |
+
+### Interpretation
+
+**Another clean negative result on `strong_baseline`.** E13 lands at
+**0.594** — identical to 3 decimals with E12a's 3-seed mean AND E12b.
+That's now four independent 3M-step honest-obs runs (E12a s3, s4, s5,
+E12b s6, E13 s7) all converging to 0.58–0.62 against strong_baseline.
+The consistency is remarkable — and damning for representation / league
+interventions:
+
+> No intervention tried so far (aux loss, league fusion) has moved the
+> `strong_baseline` win rate by more than seed noise (~2%).
+
+**The new datum: E13 goes 49.2% ± 2.2% head-to-head vs FF-E10.**
+This is the first ever honest-obs-recurrent vs hack-obs-feedforward
+number. It's a statistical dead heat (CI overlaps 0.50). Takeaways:
+
+1. The E11 head-to-head test (57.9% for honest-obs-GRU vs hack-obs-GRU)
+   showed that the recurrent GRU on honest obs actually *beats* a GRU
+   on hack obs — but FF-E10 is hack obs + FEEDFORWARD, and here the
+   recurrent-honest-obs policy is only even. That's consistent with
+   FF-E10 being a stronger policy class than E11a-GRU (it took multiple
+   iterations + the ent/no-anneal fix to get there), not evidence
+   against the honest-obs direction.
+2. Training *against* FF-E10 didn't flip the matchup in E13's favor.
+   At ~1/13 encounter frequency, FF-E10 appears for ~300k steps of the
+   3M run — that may simply be too rare for the policy to specialize
+   against.
+
+**Side effect: vs_conservative regressed (0.706 → 0.680, ~1.5σ).**
+Small enough to be seed noise, but consistent with a mild
+specialization tradeoff: pool-weighted training against a stronger,
+differently-styled opponent shifts the policy's mixed strategy slightly
+away from rule-based conservatives. Not big enough to be a real
+concern, but flags that adding mismatched opponents with `weight=1.0`
+isn't free.
+
+### Why this is informative (even though the primary hypothesis failed)
+
+1. **The 0.60 ceiling is independent of the league.** Four honest-obs
+   runs with different seeds, aux losses, and opponent pools all land
+   at the same ±2% window vs `strong_baseline`. That's not a training
+   artifact — it's a **structural property** of honest-obs-GRU at this
+   scale against a rule-based opponent with hack-level information.
+
+2. **FF-E10 vs honest-recurrent is roughly 50/50.** That fills in the
+   missing cell from the E11 post-mortem ("E11 → E10 head-to-head") at
+   low cost and provides a reasonable yardstick: our current recurrent
+   agent is *competitive* with a well-tuned feedforward hack-obs agent,
+   not dominant. More compute / bigger models / richer curricula could
+   each move this number, but representation shaping and league fusion
+   won't.
+
+3. **The remaining gap is almost certainly information asymmetry.**
+   `strong_baseline` and FF-E10 both see hack obs (public
+   n_live/n_blank). Our agent sees honest obs. A ~5pp gap vs each is
+   consistent with the information advantage itself being worth ~5pp in
+   close games. If that's right, no amount of representation tweaking
+   on the honest-obs side will close it — we'd need either (a) honest
+   obs with better inference (still bounded by the information
+   content), or (b) accept the plateau and focus on closing the gap
+   at the tail (e.g. mixed-strategy adversarial training).
+
+### Decision
+
+**Stop A/B-testing honest-obs interventions; pivot.** We now have
+strong evidence that:
+- honest-obs + recurrent + 3M steps ≈ 0.75 mean-of-4-opponents
+- the ceiling vs `strong_baseline` is 0.60 and will not be moved by
+  simple code changes
+
+Either accept this as the baseline and move to a different axis
+(opponent curriculum, self-play depth, architecture scale), or revisit
+the honest-obs assumption itself. The task-bot deliberate-information-
+hiding framing (agent must infer what hack-obs reveals directly) is
+philosophically clean but may be strictly harder in a way that
+architecture fixes can't close without orders of magnitude more data.
+
+### Next steps (revised)
+
+1. **E14 — self-play scale-up (promoted).** Longer horizon: 10M steps,
+   same honest-obs config, no aux, no FF-E10 pin. Tests whether the
+   plateau moves with ~3× more data. If yes, compute is the binding
+   constraint. If no, it's structural and we should change the
+   architecture or observation.
+2. **E15 — bigger GRU (parallel).** Same 3M-step honest-obs config but
+   hidden=256 (4× params). Tests the "maybe 128 hidden isn't enough to
+   track the full posterior" hypothesis. Cheaper than E14.
+3. **E16 — dropped honest-obs abstraction.** Go back to hack obs +
+   recurrent and see if GRU+hack beats FF-E10 and strong_baseline by a
+   wider margin. Useful data point; costs only one run.
+4. **Deferred: harder auxiliary tasks.** The E12b post-mortem suggested
+   predicting p(next-shell-live | obs) as a better aux target. Only
+   revisit after architecture/data scaling is exhausted.
