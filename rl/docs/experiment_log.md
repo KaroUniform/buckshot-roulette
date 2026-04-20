@@ -739,3 +739,144 @@ follow-ups:
 
 Priority: E12a (lowest risk, fills the seed-variance gap), then E12b
 (if seed replication holds) to chip at the BEER ceiling.
+
+---
+
+## E12a — seed replication of the E11b honest-obs setup
+
+**Hypothesis.** E11b (honest 52-dim obs + GRU, 3M steps) was a single
+seed. The +0.064 conservative gain over E11a (and the 57.9% head-to-head
+in E11b's favor) might be a fluke. Run the same config on 3 fresh seeds
+(3, 4, 5) and check that the means are stable, the strong_baseline
+ceiling persists, and E11b's numbers sit somewhere inside the seed
+distribution rather than way above it.
+
+### Setup
+
+Identical to E11b in every respect except `--seed`. All three runs:
+
+| field | value |
+|---|---|
+| script | `e12a_s{3,4,5}_launch.sh` (same body as `e11b_launch.sh` modulo seed + run-name) |
+| total-timesteps | 3,000,000 |
+| num-envs / num-steps | 32 / 128 (rollout = 4096 steps, ~733 updates) |
+| lr / ent-coef | 3e-4 / 0.05 (no anneal) |
+| hidden / embed | 128 / 128 (RecurrentActorCritic) |
+| obs layout | honest 52-dim (`--honest-obs`) |
+| scenario-replay-prob | 0.30 |
+| GPU | beeline-prod GPU 1, sequential (one at a time, polite tenant) |
+| wallclock | ≈ 14m / seed |
+
+**Code-version caveat (small).** The three seeds did NOT all train on
+the exact same opponents.py:
+- s3 trained on the **pre-INVERTER-fix** opponents (commit `8424fd6`).
+  Rule-based opponents got the buggy honest→hack collapse that ignored
+  `inverter_uses_this_round`.
+- s4 trained on the **post-INVERTER-fix** opponents (`5f320a9`):
+  per-opponent `obs_layout` routing, rule-based opponents always see
+  hack obs with true post-inverter counts.
+- s5 trained on **post-bugbot-#5/#6** opponents (`f5585be`): same as s4
+  plus two strong_baseline heuristic patches (no wasted HANDCUFF before
+  guaranteed lethal, no wasted ADRENALINE on inverter when only opp owns
+  the saw). Both patches affect rare edge-cases — strong_baseline
+  win-rate vs random/aggressive/conservative was unchanged in unit
+  tests, so the training-time effect is well below seed variance.
+
+E11b itself trained on the same pre-INVERTER-fix code as s3.
+
+### Final eval — 500 eps/opponent, post-fix opponents (apples-to-apples)
+
+All four policies (E11b + s3/4/5) were re-evaluated with the latest
+opponent code (`f5585be`) so the win-rate numbers are directly
+comparable. E11b's numbers in this table are NOT what was reported in
+the E11 post-mortem above (which used pre-fix opponents); the post-fix
+strong_baseline is slightly stronger, which mostly affects that column.
+
+| opponent | s3 | s4 | s5 | 3-seed mean ± stdev | E11b re-eval |
+|---|---|---|---|---|---|
+| random | 0.908 | 0.912 | 0.920 | **0.913 ± 0.006** | 0.922 |
+| aggressive | 0.810 | 0.778 | 0.808 | **0.799 ± 0.018** | 0.822 |
+| conservative | 0.684 | 0.696 | 0.708 | **0.696 ± 0.012** | 0.730 |
+| strong_baseline | 0.620 | 0.584 | 0.578 | **0.594 ± 0.023** | 0.598 |
+| mean of 4 | 0.756 | 0.743 | 0.754 | **0.751** | 0.768 |
+
+Binomial stderr at n=500: ±0.013–0.022 per seed/opponent, i.e. each
+single-seed cell has CI roughly ± one stdev's worth of seed variance.
+
+### Interpretation
+
+1. **Seed variance is real but bounded.** Per-opponent stdev across the
+   3 seeds is 0.6%–2.3%, with the hardest opponents (`strong_baseline`,
+   `aggressive`) showing the largest spread. The seed effect is on the
+   same order as the binomial noise of a 500-episode eval, so each
+   seed's reported number is "true ± ~2%."
+
+2. **E11b sits modestly above the 3-seed mean, not at the top.**
+   - random: +0.009 ≈ 1.5σ above mean
+   - aggressive: +0.023 ≈ 1.3σ above mean
+   - conservative: +0.034 ≈ 2.8σ above mean
+   - strong_baseline: +0.004, statistically indistinguishable
+
+   E11b's most "lucky-looking" result (conservative) is ~3σ above the
+   3-seed mean — notable but well within what a 4-sample distribution
+   would produce. The honest-obs setup is reproducible; E11b was on
+   the favorable end of variance, not anomalous.
+
+3. **The strong_baseline ceiling (~0.60) is structural, not a seed
+   artifact.** All three E12a seeds landed at 0.578–0.620 vs
+   strong_baseline. E11b's 0.598 in this re-eval matches. The BEER /
+   adrenaline-cuff blindspots flagged in the E11 post-mortem are a
+   property of the architecture/observation/training distribution, not
+   of the random seed. Closing that gap requires E12b (auxiliary head
+   for chamber tracking) or E13 (FF-E10 in the league), as planned.
+
+4. **Mean of opponent-means: E12a 0.751 vs E11b 0.768.** The single
+   E11b number that was treated as "E11b's headline" is +0.017 above
+   what 3-seed mean predicts. Future E11-style claims should report
+   either a ≥3-seed mean or a wider confidence interval; the
+   single-seed result was genuinely informative about *direction* (the
+   honest-obs config does work) but overstated the magnitude.
+
+### Confidence + caveats
+
+- Three seeds is the bare minimum for "stdev" to be meaningful; a
+  Welch's-t comparison between E12a and a hypothetical 3-seed E11a
+  pool would have wide CIs. We didn't replicate E11a (hack obs) on 3
+  seeds — that's the obvious symmetric experiment if we want a
+  rigorous A/B, but it's also another ~45 minutes of GPU and the E11
+  head-to-head (57.9% in E11b's favor at 4.5σ) is independent
+  corroboration that honest > hack.
+- The opponent-code drift between s3 (pre-INVERTER-fix) and s4/s5
+  (post-fix) is a confound. Magnitude bound: post-fix strong_baseline
+  is ~3% stronger in unit tests, which would reduce s4/s5's vs-strong
+  numbers by a few percent if anything. Looking at the numbers, s4/s5
+  ARE somewhat lower vs strong (0.584 / 0.578 vs s3's 0.620), but the
+  effect is in the same direction as expected and within stdev.
+- Eval was 500 eps × 4 opponents (= 2000 eps per seed). No
+  head-to-head matrix between the 3 E12a seeds (cheap to run later
+  if useful — would tell us whether the seeds learn distinguishable
+  policies or all converge to roughly the same fixed point).
+
+### Decision
+
+Honest-obs + GRU + 3M-step + replay-0.30 setup is **reproducible** and
+**robust enough for the league**. All future runs use this config as
+the baseline. E11b's individual numbers should be cited with the
+3-seed mean (0.751) as the canonical reference, with E11b itself as
+the high-side of the seed distribution.
+
+### Next steps
+
+1. **E12b — BEER auxiliary loss (next).** With the seed-variance
+   question answered, the BEER blindspot vs strong_baseline is the
+   biggest open performance gap. Add a chamber-composition prediction
+   head on the GRU trunk (auxiliary cross-entropy loss with weight ≈
+   0.05), train 3M steps from scratch on seed 6 with the same E11b
+   config otherwise. Hypothesis: if the GRU is forced to actually
+   track remaining live/blank counts, the policy will recognize and
+   exploit BEER-good states more often.
+2. **E13 — league fusion (later).** Pin FF-E10 as a permanent opponent
+   in the league. Gives the missing E11b-vs-E10 number and might
+   transfer FF-E10's strong-vs-strong play into the recurrent policy.
+3. **Optional E12c — E11a 3-seed replication.** Only if a reviewer
+   challenges the asymmetric seed comparison. Same compute as E12a.
