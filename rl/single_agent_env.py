@@ -1,0 +1,499 @@
+"""Single-agent gymnasium env with a frozen opponent inside.
+
+Sidesteps multi-agent training complexity: the agent sees only its own turns,
+and the wrapper internally consults `opponent_fn` whenever it's the
+opponent's turn. The "environment" is therefore engine + opponent.
+
+This is the standard self-play pattern used in AlphaStar, OpenAI Five, and
+most RL-on-2-player-games papers — train a single agent against a pool of
+frozen past selves (and rule-based baselines for warmup).
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+import gymnasium as gym
+import numpy as np
+from gymnasium import spaces
+
+from rl.engine import NUM_ACTIONS, BuckshotEngine
+from rl.opponents import OpponentFn, OpponentPool, random_opponent
+
+
+# Discrete opponent-class IDs used by the E19 opponent-embedding policy.
+# 0..3 are the rule-based archetypes; 4 is a catch-all for self-play
+# snapshots and any extra frozen policies (FF-E10 etc.). Kept small and
+# fixed so the embedding learns crisp per-archetype responses rather
+# than chasing a moving per-snapshot target as the league grows.
+OPPONENT_ID_MAP = {
+    "random": 0,
+    "aggressive": 1,
+    "conservative": 2,
+    "strong_baseline": 3,
+}
+OPPONENT_ID_OTHER = 4
+N_OPPONENT_IDS = 5
+
+
+def opponent_name_to_id(name: str) -> int:
+    """Map an opponent pool name to its embedding slot.
+
+    Unknown names (self-play snapshots, extras) collapse to
+    OPPONENT_ID_OTHER.
+    """
+    return OPPONENT_ID_MAP.get(name, OPPONENT_ID_OTHER)
+
+
+class SingleAgentBuckshotEnv(gym.Env):
+    """Gymnasium env. Agent plays against `opponent_fn`.
+
+    Args:
+        opponent_pool: sampled at reset() to pick this episode's opponent.
+            If None, defaults to a pool containing only `random`.
+        agent_pid: 0 or 1 to fix which seat the agent plays, or None to
+            randomize per-episode (recommended for training).
+    """
+
+    metadata = {"render_modes": ["ansi"]}
+
+    def __init__(
+        self,
+        opponent_pool: Optional[OpponentPool] = None,
+        agent_pid: Optional[int] = None,
+        hp_shaping: float = 0.0,
+        low_hp_prob: float = 0.0,
+        damage_bonus: float = 0.0,
+        heal_bonus: float = 0.0,
+        round_survive_bonus: float = 0.0,
+        scenario_replay_prob: float = 0.0,
+        honest_obs: bool = False,
+    ) -> None:
+        """
+        hp_shaping: if > 0, adds dense per-step reward
+            alpha * (Δhp_me − Δhp_opp) where Δhp is the change in HP
+            (negative for damage taken, positive for smoke-heal) across
+            BOTH the agent's action and the opponent's response. Shaping
+            is potential-style: the full game is terminal ±1, so the
+            sparse signal still dominates at |alpha| < 0.5. Default 0
+            = vanilla sparse reward (back-compat).
+
+        low_hp_prob: if > 0, with probability p override the agent's
+            starting HP to 1 after reset. Used to oversample defensive
+            states the natural episode distribution produces rarely —
+            "HP=1 + known-live next shell + has BEER" is exponentially
+            rare from healthy starts, so the agent has no experience to
+            learn survival plays from (E5). The override is applied
+            AFTER engine.reset() and BEFORE the opponent's pre-turn
+            moves, so the engine's own HP-range sampling still
+            generates diverse opponent HPs. Default 0 = no curriculum.
+
+        damage_bonus: β for E8 multi-component shaping. Per step,
+            agent receives β * max(0, -Δhp_opp) — reward proportional
+            to damage dealt to opponent. Asymmetric vs hp_shaping:
+            does not penalize being damaged (terminal ±1 handles that).
+
+        heal_bonus: γ for E8. Per step, agent receives
+            γ * max(0, Δhp_me) — reward for HP restored (SMOKE,
+            good-pills). Cap is implicit since engine clamps to max_hp.
+
+        round_survive_bonus: δ for E8. Per step where n_reloads
+            increased AND agent is alive, agent receives δ. Sparse
+            (typical episodes have 1-3 reloads), rewards reaching a
+            new chamber alive.
+
+        All three E8 shaping terms have a calibrated budget: typical
+        winning episode yields total shaped ≈ 0.3-0.5 << terminal +1,
+        so the win signal still dominates unlike E5/E6's α=0.05
+        symmetric shaping which accumulated to ±1.5 per episode.
+
+        scenario_replay_prob: if > 0, with probability p the engine's
+            natural reset state is overridden with a hand-picked
+            "defensive scenario" — agent at 1HP, known-live next shell,
+            inventory containing a defensive item (BEER / INVERTER /
+            SMOKE). The reward signal stays terminal ±1 (no per-action
+            heuristic); we only force the agent to *visit* states where
+            the alternative-to-shoot has positive on-policy advantage
+            often enough that PPO's ratio-clipped update can flow toward
+            it. E5–E7 confirmed the survival blindspot is mode collapse,
+            not credit assignment: the critic correctly predicts V≈-0.7
+            in s* states but the actor still picks SHOOT_OPPONENT with
+            p=1.00 because USE_BEER never appeared in rollouts. This
+            forces it to. Scenarios are seeded by the per-env RNG so
+            different seeds produce different (but in-distribution)
+            mutations.
+        """
+        super().__init__()
+        self.honest_obs = bool(honest_obs)
+        self.engine = BuckshotEngine(honest_obs=self.honest_obs)
+        # Probe observation length on a throwaway engine so the real engine's
+        # RNG isn't pinned to seed=0 (which would make seedless reset()s
+        # repeat the same game forever across env instances).
+        _probe = BuckshotEngine(honest_obs=self.honest_obs)
+        _probe.reset(seed=0)
+        obs_len = _probe.observation(0).shape[0]
+
+        self.observation_space = spaces.Dict(
+            {
+                "observation": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(obs_len,), dtype=np.float32
+                ),
+                "action_mask": spaces.Box(
+                    low=0, high=1, shape=(NUM_ACTIONS,), dtype=np.int8
+                ),
+            }
+        )
+        self.action_space = spaces.Discrete(NUM_ACTIONS)
+
+        self.pool = opponent_pool or OpponentPool({"random": random_opponent})
+        self.agent_pid = agent_pid
+        self.hp_shaping = float(hp_shaping)
+        self.low_hp_prob = float(low_hp_prob)
+        self.damage_bonus = float(damage_bonus)
+        self.heal_bonus = float(heal_bonus)
+        self.round_survive_bonus = float(round_survive_bonus)
+        self.scenario_replay_prob = float(scenario_replay_prob)
+        self._opp_fn: OpponentFn = random_opponent
+        self._opp_name = "random"
+        self._agent_pid_this_ep = 0
+        self._opp_rng = np.random.default_rng()
+
+    # ---- gym API ----
+
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
+        # Rare edge case: the opponent's first moves can end the game
+        # (e.g., pills backfire into a kill). gymnasium's SyncVectorEnv
+        # doesn't learn the game ended during reset, so it would feed us
+        # a step() on a terminal state, creating phantom training
+        # transitions. Loop with perturbed seeds until we reset into a
+        # non-terminal state. In practice this almost always resolves in
+        # one attempt.
+        base_seed = seed
+        for attempt in range(50):
+            if base_seed is not None:
+                eff_seed = base_seed + attempt
+                self._opp_rng = np.random.default_rng(eff_seed + 1)
+            else:
+                eff_seed = None
+            self.engine.reset(seed=eff_seed)
+
+            if self.agent_pid is None:
+                self._agent_pid_this_ep = int(self._opp_rng.integers(0, 2))
+            else:
+                self._agent_pid_this_ep = self.agent_pid
+
+            self._opp_name, _opp_sampled = self.pool.sample(self._opp_rng)
+            self._opp_id = opponent_name_to_id(self._opp_name)
+            # Stateful (recurrent) opponents register as factories: instantiate
+            # a fresh callable per-episode so its hidden state doesn't leak
+            # across episodes, and so parallel envs don't share state.
+            if getattr(_opp_sampled, "_is_factory", False):
+                self._opp_fn = _opp_sampled()
+            else:
+                self._opp_fn = _opp_sampled
+
+            if self.low_hp_prob > 0.0 and self._opp_rng.random() < self.low_hp_prob:
+                # Keep engine-assigned max_hp (opp still has a normal max); only
+                # clamp agent's current HP to 1 so defensive scenarios are
+                # forced. Agent's max_hp stays as engine set — so SMOKE remains
+                # legal (hp < max_hp) and INVERTER / BEER have their usual
+                # survival value.
+                self.engine.state.players[self._agent_pid_this_ep].hp = 1
+
+            if self.scenario_replay_prob > 0.0 and self._opp_rng.random() < self.scenario_replay_prob:
+                self._inject_defensive_scenario(self._opp_rng)
+
+            terminated, terminal_reward = self._play_opponent_until_agent_turn()
+            if not terminated:
+                return self._obs(), {
+                    "opponent": self._opp_name,
+                    "opponent_id": self._opp_id,
+                    "agent_pid": self._agent_pid_this_ep,
+                    **self._chamber_info(),
+                }
+            # else: very rare — retry with a perturbed seed (or a fresh
+            # random seed if base_seed was None; np.random.default_rng()
+            # with no seed picks entropy from OS)
+
+        # Degenerate fallback: surface the terminal state with flags so
+        # callers (eval.py) can short-circuit; the PPO training loop
+        # also handles this safely via _was_dead_step-like semantics
+        # because terminations==True would fire on the next step.
+        return self._obs(), {
+            "opponent": self._opp_name,
+            "opponent_id": self._opp_id,
+            "agent_pid": self._agent_pid_this_ep,
+            "_terminated_in_reset": True,
+            "_terminal_reward": terminal_reward,
+            **self._chamber_info(),
+        }
+
+    def step(self, action):
+        # Caller may have ignored the _terminated_in_reset flag and stepped anyway —
+        # in that case mirror the terminal step.
+        if self.engine.state.done:
+            obs = self._obs()
+            winner = self.engine.state.winner
+            reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
+            return obs, reward, True, False, {
+                "opponent": self._opp_name,
+                "opponent_id": self._opp_id,
+                **self._chamber_info(),
+            }
+
+        # Snapshot state for shaping (zero cost when all shaping coefs == 0)
+        hp_me_before = self.engine.state.players[self._agent_pid_this_ep].hp
+        hp_opp_before = self.engine.state.players[1 - self._agent_pid_this_ep].hp
+        reloads_before = self.engine.state.n_reloads
+
+        # Agent acts
+        self.engine.step(int(action))
+        if self.engine.state.done:
+            return self._terminal_return(hp_me_before, hp_opp_before, reloads_before)
+
+        # Opponent acts until either game ends or it's our turn again
+        terminated, _ = self._play_opponent_until_agent_turn()
+        if terminated:
+            return self._terminal_return(hp_me_before, hp_opp_before, reloads_before)
+
+        shaped = self._shaped_reward(hp_me_before, hp_opp_before, reloads_before)
+        return self._obs(), shaped, False, False, {
+            "opponent": self._opp_name,
+            "opponent_id": self._opp_id,
+            **self._chamber_info(),
+        }
+
+    def sync_pool(
+        self,
+        manifest: list[tuple[str, str, float, str]],
+        device: str = "cpu",
+    ) -> int:
+        """Replace this env's opponent pool from a serializable manifest.
+
+        Broadcast by the AsyncVectorEnv parent via `envs.call("sync_pool", ...)`
+        whenever the training pool has gained or lost a snapshot. Workers
+        rebuild their pool entirely from disk — no mutable Python state is
+        shared across the pipe.
+
+        Returns the new pool size (length of `self.pool.opponents`) so the
+        parent can sanity-check the broadcast actually landed.
+
+        Called between rollouts — the env may be mid-episode, but the new
+        pool only takes effect at the NEXT `reset()` (where `pool.sample`
+        runs). So we just swap the reference and let the current episode
+        play out against the previously-sampled opponent.
+        """
+        from rl.opponents import build_pool_from_manifest
+        self.pool = build_pool_from_manifest(manifest, device=device)
+        return len(self.pool)
+
+    def render(self) -> Optional[str]:
+        s = self.engine.state
+        if s is None:
+            return "<not reset>"
+        return (
+            f"agent=player_{self._agent_pid_this_ep} vs {self._opp_name}  "
+            f"turn=player_{s.current_player}  hps={s.players[0].hp}/{s.players[1].hp}  "
+            f"shells={len(s.shells)}"
+        )
+
+    # ---- internals ----
+
+    # Defensive items, in inventory-encoding order (Item enum).
+    # Each scenario gives the agent ONE of these so SHOOT_OPPONENT is
+    # not the only legal-and-survivable choice. The exact correct
+    # response depends on the item — we don't tell the agent which one;
+    # PPO has to discover it.
+    _SCENARIO_DEFENSIVE_ITEMS = (1, 2, 8)  # BEER, SMOKE, INVERTER
+
+    def _inject_defensive_scenario(self, rng: np.random.Generator) -> None:
+        """Mutate engine.state into a 'survival blindspot' configuration.
+
+        After this call:
+          - Agent is at 1 HP (max_hp untouched so SMOKE remains usable).
+          - Agent's known_shells says position 0 is LIVE.
+          - shells[0] is actually live (consistent with knowledge).
+          - Agent has exactly one defensive item: BEER, SMOKE, or INVERTER.
+          - It is the agent's turn.
+          - Opponent state is the engine-sampled default (random HP, random
+            inventory) so the agent does not memorize a fixed opponent.
+          - damage_mult, adrenaline_active, cuffs are all reset to the
+            "fresh turn" defaults so the next legal-action mask is clean.
+
+        The agent's *correct* play differs by item (BEER ejects the live
+        shell, SMOKE heals to delay, INVERTER flips it to blank). We do
+        not encode any of that — the natural ±1 terminal reward provides
+        the gradient. We only ensure the actor encounters the state
+        often enough that the alternative-to-shoot becomes a real
+        on-policy choice instead of a never-visited mode.
+        """
+        s = self.engine.state
+        pid = self._agent_pid_this_ep
+        opp = 1 - pid
+
+        # 1. HP setup
+        s.players[pid].hp = 1
+        # opponent stays as engine-sampled, but ensure they're alive (they
+        # always are after engine.reset, but defensive)
+        if s.players[opp].hp <= 0:
+            s.players[opp].hp = max(2, s.players[opp].max_hp)
+
+        # 2. Item setup: clear agent's inventory, give exactly ONE of the
+        #    defensive items. (Opponent inventory left as engine-sampled.)
+        s.players[pid].inventory[:] = 0
+        item_id = int(rng.choice(self._SCENARIO_DEFENSIVE_ITEMS))
+        s.players[pid].inventory[item_id] = 1
+
+        # 3. Shotgun setup: at least 2 shells so BEER/INVERTER aren't
+        #    instantly mooted by an empty chamber. First shell live; second
+        #    is random; further shells are engine-shuffled live/blank.
+        n_shells = max(2, len(s.shells)) if s.shells else int(rng.integers(2, 5))
+        # Build a chamber: live first, then a random tail with at least
+        # one of each remaining if n_shells > 2.
+        tail_n = n_shells - 1
+        # Tail composition: at least 1 blank so BEER->next-shot can be safe
+        # if agent picks BEER + SHOOT_SELF combo. Since n_shells >= 2 we
+        # always have tail_n >= 1, and rng.integers(0, tail_n) returns a
+        # value in [0, tail_n), giving tail_live <= tail_n - 1 and
+        # therefore tail_blank >= 1 by construction.
+        tail_live = int(rng.integers(0, max(1, tail_n)))
+        tail_blank = tail_n - tail_live
+        tail = [True] * tail_live + [False] * tail_blank
+        rng.shuffle(tail)
+        s.shells = [True] + tail
+
+        # 4. Agent's known_shells: only position 0 is known (live). Other
+        #    positions stay unknown so the agent can't trivially win by
+        #    knowing the whole chamber.
+        s.known_shells[pid] = {0: True}
+        s.known_shells[opp] = {}  # opponent's knowledge wiped to match a fresh state
+
+        # 5. Engine-state hygiene: clean turn boundary
+        s.damage_mult = 1
+        s.adrenaline_active = False
+        s.players[pid].skip_next_turn = False
+        s.players[opp].skip_next_turn = False
+        s.current_player = pid
+        s.done = False
+        s.winner = None
+        # n_reloads stays at whatever the engine's reset() set it to (0);
+        # don't touch — round_survive_bonus uses the delta, not the absolute.
+        # 6. Honest-obs bookkeeping: the scenario overwrites the chamber, so
+        #    the initial-declaration + event counters set by _load_round no
+        #    longer reflect reality. Reset them to match the injected chamber
+        #    so the honest-obs invariant holds throughout the scenario.
+        n_live_scn = sum(1 for x in s.shells if x)
+        s.round_initial_live = n_live_scn
+        s.round_initial_blank = len(s.shells) - n_live_scn
+        s.shots_fired_live_this_round = 0
+        s.shots_fired_blank_this_round = 0
+        s.beer_ejected_live_this_round = 0
+        s.beer_ejected_blank_this_round = 0
+        s.inverter_uses_this_round = 0
+
+    def _obs(self) -> dict:
+        obs = self.engine.observation(self._agent_pid_this_ep).astype(np.float32)
+        if self.engine.state.current_player == self._agent_pid_this_ep and not self.engine.state.done:
+            mask = self.engine.legal_actions().astype(np.int8)
+        else:
+            mask = np.zeros(NUM_ACTIONS, dtype=np.int8)
+        return {"observation": obs, "action_mask": mask}
+
+    def _chamber_info(self) -> dict:
+        """Ground-truth chamber composition for representation-shaping losses.
+
+        Returns the engine's true (n_live, n_blank) for the CURRENT chamber,
+        independent of which obs layout the agent sees. Used by the recurrent
+        PPO trainer to fit an aux-head regression target. On a terminal step
+        the chamber may be empty/stale — the trainer masks those positions
+        in the loss anyway, but we still return the engine's last value
+        rather than NaN to keep tensor shapes uniform.
+        """
+        shells = self.engine.state.shells
+        n_live = sum(1 for x in shells if x)
+        return {"n_live": int(n_live), "n_blank": int(len(shells) - n_live)}
+
+    def _play_opponent_until_agent_turn(self) -> tuple[bool, float]:
+        """Run opponent moves while it's their turn. Returns (terminated, reward).
+
+        Honors an opponent's declared `obs_layout` attribute so the obs we
+        hand it matches what the opponent was written/trained for. This
+        decouples the opponent's required layout from the agent's — e.g. a
+        rule-based opponent ("hack") can coexist with an honest-obs agent in
+        the same env without a lossy/biased layout conversion.
+        """
+        opp_layout = getattr(self._opp_fn, "obs_layout", None)
+        while (
+            not self.engine.state.done
+            and self.engine.state.current_player != self._agent_pid_this_ep
+        ):
+            opp_pid = 1 - self._agent_pid_this_ep
+            obs = self.engine.observation(opp_pid, layout=opp_layout).astype(np.float32)
+            mask = self.engine.legal_actions().astype(np.int8)
+            if not mask.any():
+                # Shouldn't happen with current engine; safety net
+                break
+            action = self._opp_fn(obs, mask, self._opp_rng)
+            self.engine.step(int(action))
+        if self.engine.state.done:
+            winner = self.engine.state.winner
+            return True, (1.0 if winner == self._agent_pid_this_ep else -1.0)
+        return False, 0.0
+
+    def _shaped_reward(
+        self, hp_me_before: int, hp_opp_before: int, reloads_before: int
+    ) -> float:
+        """Combined shaping: E5-style symmetric hp_shaping (back-compat) PLUS
+        E8-style asymmetric components (damage_bonus, heal_bonus,
+        round_survive_bonus). All terms use current engine state relative to
+        snapshotted before-values."""
+        if (
+            self.hp_shaping == 0.0
+            and self.damage_bonus == 0.0
+            and self.heal_bonus == 0.0
+            and self.round_survive_bonus == 0.0
+        ):
+            return 0.0
+        s = self.engine.state
+        hp_me_after = s.players[self._agent_pid_this_ep].hp
+        hp_opp_after = s.players[1 - self._agent_pid_this_ep].hp
+        delta_me = hp_me_after - hp_me_before
+        delta_opp = hp_opp_after - hp_opp_before
+
+        r = 0.0
+        if self.hp_shaping != 0.0:
+            r += self.hp_shaping * float(delta_me - delta_opp)
+        if self.damage_bonus != 0.0:
+            r += self.damage_bonus * float(max(0, -delta_opp))
+        if self.heal_bonus != 0.0:
+            r += self.heal_bonus * float(max(0, delta_me))
+        if self.round_survive_bonus != 0.0:
+            reloads_delta = s.n_reloads - reloads_before
+            # Only credit if the agent is still alive at measurement time.
+            # On a terminal step where agent lost, hp_me_after <= 0 and we
+            # skip the bonus; opponent can still trigger reloads that the
+            # dead agent didn't "survive" into.
+            if reloads_delta > 0 and hp_me_after > 0:
+                r += self.round_survive_bonus * float(reloads_delta)
+        return r
+
+    def _terminal_return(
+        self,
+        hp_me_before: int = 0,
+        hp_opp_before: int = 0,
+        reloads_before: int = 0,
+    ):
+        winner = self.engine.state.winner
+        reward = 1.0 if winner == self._agent_pid_this_ep else -1.0
+        reward += self._shaped_reward(hp_me_before, hp_opp_before, reloads_before)
+        return (
+            self._obs(),
+            float(reward),
+            True,
+            False,
+            {
+                "opponent": self._opp_name,
+                "opponent_id": self._opp_id,
+                **self._chamber_info(),
+            },
+        )

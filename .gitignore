@@ -160,3 +160,11 @@ cython_debug/
 #.idea/
 .vscode/*
 .pyc
+
+# RL training outputs (checkpoints, metrics, tensorboard)
+rl_runs/
+wandb/
+
+# Personal experiment launchers (hardcoded paths, GPU pins).
+# Naming convention: e<number>[suffix]_launch.sh — e.g. e11a_launch.sh, e2_launch.sh.
+e[0-9]*_launch.sh
