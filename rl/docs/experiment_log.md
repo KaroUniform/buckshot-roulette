@@ -1562,7 +1562,81 @@ Early trajectory (first 17 updates, ~70k steps):
 - approx_kl stable at ~0.002, clipfrac <3%. No optimization
   pathologies so far.
 
-Post-mortem to be appended once training + eval complete (~2h).
+**Post-mortem (appended 2026-04-21 22:45 UTC, after completion).**
+
+Training ran the full 10M steps (2441 updates) on GPU 1. Clean
+shutdown, no pathologies. Training-time evals (n=200 eps,
+per-opponent) showed wild swings — best vs strong_baseline hit
+0.78 at u=2160 with entropy 0.17, then regressed to 0.645 at
+the final update with entropy 0.18. The 0.78 was misleading; a
+500-eps eval of that same checkpoint gives 0.69 (matching E18).
+Moral: a 200-eps eval has ~3pp standard error and is too noisy
+to detect real improvements at the Nash-equilibrium plateau.
+
+**500-episode eval (CPU, post-fix handsaw engine):**
+
+| opponent        | E18-final | E19-final | E19-best (u=2160) |
+|-----------------|-----------|-----------|-------------------|
+| random          | 0.938     | 0.926     | 0.930             |
+| aggressive      | 0.820     | 0.834     | 0.838             |
+| conservative    | 0.784     | 0.764     | 0.766             |
+| strong_baseline | 0.690     | 0.674     | 0.690             |
+| E18-final (H2H) | —         | 0.526     | **0.550**         |
+
+**What this tells us:**
+
+1. **Against rule-based opponents, E19 matches E18.** No opponent
+   in NAMED_OPPONENTS benefits from opponent-conditioning because
+   they're all deterministic policies — the trunk already learns
+   to probe-and-respond without an explicit id. E19's embedding
+   is basically a no-op here.
+
+2. **Head-to-head vs E18, E19-best wins 55%.** With n=500 that
+   gives SE ≈ 2.2pp, so 0.550 vs 0.500 is z ≈ 2.3 (borderline
+   significant). This is the cleanest signal that the embedding
+   gave *some* real edge: when the pool has diverse opponents
+   worth conditioning on (recurrent snapshots are non-stationary),
+   the embedding earns its +5 parameters.
+
+3. **Training past peak hurt.** E19-best (u=2160) vs E19-final
+   (u=2440) — 1.6M extra steps lost ~2pp on H2H. Overfitting on
+   the latest snapshots at the cost of rule-based opponents.
+   Suggests a best-checkpoint tracker in future runs instead of
+   trusting `policy_final.pt`.
+
+**Verdict: E19 is a marginal win.** The opponent embedding helps
+in non-stationary-pool scenarios but not on rule-based evals.
+The feature is cheap (+5 params) and now verified safe. Promote
+the pattern into E20 but don't expect another big jump from the
+representation alone — we're at the Nash plateau for hidden=256.
+
+**What NOT to do in E20:**
+- More hidden-size scaling (E18→E19 at hidden=256 gave no rule
+  improvement; scaling alone is unlikely to help).
+- Another "try a new NN feature" experiment without checking
+  whether the current policy actually has room to improve vs
+  NAMED_OPPONENTS. 0.69 vs strong_baseline with entropy 0.18 may
+  be close to optimal against that specific rule-based policy.
+
+**What to do in E20 — candidates:**
+- **Exploiter analysis:** train a dedicated exploiter policy vs
+  E19-best with 1-2M steps, see if it consistently beats E19.
+  If it wins >60% we know what E19 is missing.
+- **Early stopping / best-checkpoint infra:** track best-SB-eval
+  during training, save that separately. Small infra win,
+  enables longer runs without regret.
+- **Pin E18 as a league opponent in E20.** E19's H2H edge is
+  small (5pp); forcing E20 to learn vs E18-the-snapshot should
+  push it past E19.
+- **Co-play with perturbation:** evaluate policy via perturbed
+  games (e.g., force small random noise into chamber loading)
+  to find robustness gaps.
+
+Note: E19 ran on the pre-handsaw-fix engine (commit a84cfaa
+landed after E19 started). Multi-handsaw stacking was rare
+enough that eval numbers on the fixed engine are still
+meaningful — but any E19 "strategies" that depended on the
+exploit are now unreachable. No re-eval needed.
 
 ## Async vector envs (infra PR, 2026-04-21)
 
