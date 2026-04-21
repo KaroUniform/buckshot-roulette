@@ -1638,6 +1638,36 @@ enough that eval numbers on the fixed engine are still
 meaningful — but any E19 "strategies" that depended on the
 exploit are now unreachable. No re-eval needed.
 
+## E20 — exploiter analysis (launched 2026-04-21 00:24 UTC)
+
+Diagnostic experiment picked from E19 post-mortem's candidate
+list. Question: does E19 have exploitable blind spots, or is
+it at the Nash plateau for hidden=256?
+
+**Setup:** Train a new recurrent PPO agent (fresh init, seed=20,
+hidden=256) whose SOLE opponent is the frozen E19-best snapshot
+at u=2160. No rule-based opponents in the pool — only the main
+and the exploiter's own past snapshots (for diversity). 2M
+steps, async env (2× rollout speedup), ~20-30 min on H100 GPU 1.
+
+**Interpretation rules (set before results):**
+- Exploiter wins **<52% vs main** → E19 is near-Nash. Stop
+  scaling; move to product integration or a different scope.
+- Exploiter wins **52-58%** → minor weakness. Fold exploiter
+  into E21 league as a pinned opponent; expect small gain.
+- Exploiter wins **>60%** → real blind spot. Analyze action
+  distribution to pin down the exploit; shape it into training.
+
+**Launch details:** `rl/exploiter.py` uses a monkey-patch on
+`rl.ppo_recurrent.OpponentPool` so the standard training loop's
+pool contains only `main` (frozen E19-best) plus exploiter
+snapshots. Pool.manifest() broadcasts correctly via async env
+(ckpt_path annotated). Will post-eval exploiter vs main for
+500 eps to get a clean winrate CI.
+
+pid 4075, run_dir rl_runs/E20_exploiter_vs_E19_s20, seed=20.
+Post-mortem to follow.
+
 ## Async vector envs (infra PR, 2026-04-21)
 
 Drafted during E19's wait. Four-commit chunk into PR #3 that swaps
