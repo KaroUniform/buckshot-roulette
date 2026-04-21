@@ -101,6 +101,44 @@ def test_policy_loads():
     print(f"ok  policy_loads (obs_dim={policy.obs_dim}, honest={policy.uses_honest_obs})")
 
 
+def test_loadout_text_pinned_at_event_time():
+    """Regression for bugbot b11b23bd: loadout_text on AIRoomEvent must
+    reflect state AT event construction, not a live re-read of
+    `room.state` which may have advanced through additional reloads
+    before the handler awaits its `send_message`.
+
+    We don't rely on the policy naturally chaining reloads in the
+    opening burst (rare, seed-dependent). Instead we construct the
+    opening event, snapshot the text, then force the engine through a
+    fresh reload and assert the pinned string didn't move.
+    """
+    policy = AIPolicy.get()
+    r = AIRoom.new(human_name="Test", policy=policy, seed=17)
+    events = r.start()
+
+    loadout_events = [e for e in events if e.loadout_text is not None]
+    assert loadout_events, "start() must emit at least one loadout event"
+    pinned_before = loadout_events[0].loadout_text
+
+    # Mutate the live state: pretend a later AI action forced a reload
+    # with a different declaration. If the event had been deferred
+    # (i.e. rendering at send-time against live state), pinned_before
+    # would follow these mutations — it must not.
+    r.state.round_initial_live = 99
+    r.state.round_initial_blank = 99
+
+    pinned_after = loadout_events[0].loadout_text
+    assert pinned_before == pinned_after, (
+        f"loadout_text drifted after state mutation: "
+        f"{pinned_before!r} -> {pinned_after!r}"
+    )
+    # And the pinned string must NOT contain the injected 99×99 values.
+    assert "99" not in pinned_before, (
+        f"pinned loadout leaked live state: {pinned_before!r}"
+    )
+    print(f"ok  loadout_text_pinned_at_event_time  (pinned={pinned_before!r})")
+
+
 def test_games_terminate():
     policy = AIPolicy.get()
     ai_wins = 0
@@ -118,7 +156,12 @@ def test_games_terminate():
 
 
 def main() -> int:
-    tests = [test_actions_roundtrip, test_policy_loads, test_games_terminate]
+    tests = [
+        test_actions_roundtrip,
+        test_policy_loads,
+        test_loadout_text_pinned_at_event_time,
+        test_games_terminate,
+    ]
     failed = 0
     for t in tests:
         try:

@@ -59,18 +59,19 @@ async def _send_events(bot: Bot, chat_id: int, room: "AIRoom", events):
     human can read what happened. Not cosmetic-only: without this, a
     multi-item AI turn fires 4-5 messages in the same animation frame
     and the user misses intermediate state.
+
+    Loadout strings are pinned at event-construction time (see
+    `AIRoomEvent.loadout_text`), not re-rendered here, because this
+    coroutine awaits between sends — the live `room.state` may have
+    already advanced to a later reload by the time we announce the
+    earlier round.
     """
-    from ai import render
     final_keyboard = None
     for ev in events:
         kb = _send_keyboard(ev.keyboard_hint, room)
         await bot.send_message(chat_id, ev.text, reply_markup=kb)
-        if ev.show_loadout:
-            await bot.send_message(
-                chat_id,
-                render.loadout_line(room.state),
-                protect_content=True,
-            )
+        if ev.loadout_text is not None:
+            await bot.send_message(chat_id, ev.loadout_text, protect_content=True)
         final_keyboard = kb
         # Pause slightly between consecutive AI sub-actions.
         if ev.keyboard_hint == "wait":

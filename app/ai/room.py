@@ -31,10 +31,18 @@ class AIRoomEvent:
         'human_turn' — the human's reply keyboard should be rebuilt
         'wait'       — render the 🕓 waiting keyboard
         'game_over'  — terminal; render a rematch/leave keyboard
+
+    `loadout_text` is non-None when the event should be followed by an
+    initial-chamber declaration. It's pre-rendered here (not at send
+    time) because `room.state` is mutable — by the time the handler
+    awaits `bot.send_message`, additional AI sub-actions may have
+    reloaded the chamber and the live state would report the *new*
+    round's counts. Pinning the string at event-construction avoids
+    that drift.
     """
     text: str
     keyboard_hint: str = "human_turn"
-    show_loadout: bool = False
+    loadout_text: Optional[str] = None
 
 
 @dataclass
@@ -54,12 +62,6 @@ class AIRoom:
     policy: AIPolicy
     hidden: object  # torch.Tensor, opaque to avoid torch import here
     ai_done_prev: bool = False
-    # Track the `n_reloads` value the human LAST saw so we can detect
-    # chamber reloads and emit a "new round" banner in the event stream.
-    last_seen_reloads: int = 0
-    # Remember whether we just announced the current loadout — avoids
-    # double-printing it when the AI triggers a reload mid-chain.
-    loadout_announced: bool = False
 
     @classmethod
     def new(
@@ -85,8 +87,6 @@ class AIRoom:
             policy=policy,
             hidden=policy.initial_hidden(),
             ai_done_prev=False,
-            last_seen_reloads=engine.state.n_reloads,
-            loadout_announced=False,
         )
 
     # ---- helpers ----
@@ -116,15 +116,15 @@ class AIRoom:
         If the AI happens to go first, this also drains the AI's opening
         moves before handing control back to the human.
         """
+        from . import render
         events: List[AIRoomEvent] = []
         events.append(
             AIRoomEvent(
                 text=self._opening_text(),
                 keyboard_hint="wait" if not self.is_human_turn else "human_turn",
-                show_loadout=True,
+                loadout_text=render.loadout_line(self.state),
             )
         )
-        self.loadout_announced = True
         if not self.is_human_turn and not self.game_over:
             events.extend(self._drain_ai())
         return events
@@ -220,8 +220,13 @@ class AIRoom:
             text=render.action_caption(int(action), info, actor="human"),
         ))
         if self.engine.state.n_reloads > prev_reloads:
-            events.append(AIRoomEvent(text=render.reload_banner(), show_loadout=True))
-            self.loadout_announced = True
+            # Snapshot the new round's declaration NOW — deferring to
+            # handler send-time would show stale counts once a later
+            # AI reload mutates round_initial_live/_blank again.
+            events.append(AIRoomEvent(
+                text=render.reload_banner(),
+                loadout_text=render.loadout_line(self.state),
+            ))
         # Final state summary + keyboard hint (handler rebuilds reply
         # markup from the live state, so we just flag which mode).
         summary = render.game_summary(self.state, self.human_name, self.human_id)
@@ -240,10 +245,16 @@ class AIRoom:
             ),
         ]
         if self.engine.state.n_reloads > prev_reloads:
+            # Snapshot the new round's declaration here — the AI may
+            # chain further sub-actions that trigger another reload
+            # before the handler gets to dispatch this event, and the
+            # live `state.round_initial_*` would then reflect the
+            # later round instead of the one we want to announce.
             events.append(AIRoomEvent(
-                text=render.reload_banner(), show_loadout=True, keyboard_hint="wait",
+                text=render.reload_banner(),
+                keyboard_hint="wait",
+                loadout_text=render.loadout_line(self.state),
             ))
-            self.loadout_announced = True
         if self.is_human_turn:
             # Final summary only when control returns — avoids spamming
             # the same HP block after every AI sub-action.
