@@ -15,6 +15,7 @@ Welcome to Buckshot Roulette! Here's a quick guide to the game:
 1. *Create/Join a Room:*
    - To start, create a room with `/join` command.
    - If you have a code, simply use `/join 123456` to join an existing room.
+   - Prefer to play solo? Use `/ai` to fight a trained RL bot (E19) head-up.
 
 2. *Initiate the Game:*
    - The game kicks off with a coin toss to determine who goes first.

@@ -26,6 +26,7 @@ async def main() -> None:
     # dp.message.middleware(Debug())
 
     dp.include_routers(
+        handlers.ai_game.router,     # AI-mode messages — state-filtered
         handlers.rooms_manager.router,
         handlers.start.router,
         handlers.echo.router,
