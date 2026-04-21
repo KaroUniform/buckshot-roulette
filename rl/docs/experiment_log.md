@@ -1638,6 +1638,53 @@ enough that eval numbers on the fixed engine are still
 meaningful — but any E19 "strategies" that depended on the
 exploit are now unreachable. No re-eval needed.
 
+### Post-fix re-eval (2026-04-21, after eval bug 055daf0)
+
+Bugbot 12ff10d6 flagged that `evaluate_recurrent_policy` never
+passed `opp_ids` into `act_stateful`, so E19's opponent embedding
+contributed 0 during all pre-merge evaluations — including the
+post-mortem table above. Re-ran 500-ep NAMED_OPPONENTS eval on
+the fixed code (`rl/eval.py` now threads `opp_id` from env info):
+
+| opponent        | Pre-fix E19-best | Post-fix E19-best | Δ     |
+|-----------------|------------------|-------------------|-------|
+| random          | 0.930            | **0.942**         | +1.2  |
+| aggressive      | 0.838            | **0.864**         | +2.6  |
+| conservative    | 0.766            | 0.770             | +0.4  |
+| strong_baseline | **0.690**        | 0.630             | −6.0  |
+| avg (rule)      | 0.806            | 0.802             | −0.4  |
+
+| opponent        | Pre-fix E19-final | Post-fix E19-final | Δ     |
+|-----------------|-------------------|--------------------|-------|
+| random          | 0.926             | **0.940**          | +1.4  |
+| aggressive      | 0.834             | **0.860**          | +2.6  |
+| conservative    | 0.764             | 0.770              | +0.6  |
+| strong_baseline | **0.674**         | 0.634              | −4.0  |
+| avg (rule)      | 0.800             | 0.801              | +0.1  |
+
+**What changed:** the embedding actually is doing something. With
+it active, E19 plays *differently* against each opponent class —
+noticeably better vs random/aggressive, worse vs strong_baseline.
+Average against rule-based is roughly unchanged. The +5pp H2H vs
+E18 (post-mortem's headline) is likely still directionally right
+but was measured on pre-fix data and needs a recurrent-aware H2H
+infra addition (round_robin's `play_match` only supports FF
+policies via `.act`; refactor for `act_stateful` + `opp_ids` is
+~30 min of work — deferred unless E20 shows a reason to care).
+
+**Refined verdict (post-fix):** E19 is a **trade-off win**, not
+a marginal one. The embedding specialises the policy per
+opponent — exploiting easier opponents harder and slightly
+under-exploiting strong_baseline. Average impact on rule-based
+is zero. The genuine lift we can't measure here is vs
+non-stationary recurrent snapshots (the pool during training) —
+that's where ids actually change. Don't expect the embedding to
+help vs fixed rule-based in future runs; keep it for the
+league-dynamics case.
+
+Re-eval raw JSON: `rl_runs/E19_opp_embed_s10/reeval_post_bugfix.json`
+(copied from beeline `~/e19_reeval_post_bugfix.json`).
+
 ## E20 — exploiter analysis (launched 2026-04-21 00:24 UTC)
 
 Diagnostic experiment picked from E19 post-mortem's candidate
