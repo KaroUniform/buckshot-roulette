@@ -215,16 +215,33 @@ class AIRoom:
         self, action: Action, info: dict, prev_reloads: int, done: bool,
     ) -> List[AIRoomEvent]:
         from . import render
+        # Pick one hint for all events in this burst based on the post-
+        # action state, and apply it uniformly:
+        #
+        #   done=True              → "game_over" (terminal; live state
+        #                             has no legal actions and
+        #                             `human_turn_keyboard` would return
+        #                             an empty ReplyKeyboardMarkup that
+        #                             Telegram rejects)
+        #   turn went to the AI    → "wait" (if we left this as
+        #                             "human_turn" the handler would ask
+        #                             `human_turn_keyboard` with
+        #                             `current_player=ai_id`, painting a
+        #                             mis-built keyboard for a split
+        #                             second until the summary event
+        #                             replaces it)
+        #   turn stays with human  → "human_turn"
+        if done:
+            turn_hint = "game_over"
+        elif self.is_human_turn:
+            turn_hint = "human_turn"
+        else:
+            turn_hint = "wait"
+
         events: List[AIRoomEvent] = []
-        # When the engine has marked the game terminal on this step, every
-        # event we emit must render under the game-over keyboard — the
-        # live state has no legal actions and `human_turn_keyboard` would
-        # produce an empty ReplyKeyboardMarkup that Telegram rejects.
-        default_hint = "game_over" if done else "human_turn"
-        mid_hint = "game_over" if done else "wait"
         events.append(AIRoomEvent(
             text=render.action_caption(int(action), info, actor="human"),
-            keyboard_hint=default_hint,
+            keyboard_hint=turn_hint,
         ))
         if self.engine.state.n_reloads > prev_reloads:
             # Snapshot the new round's declaration NOW — deferring to
@@ -232,17 +249,13 @@ class AIRoom:
             # AI reload mutates round_initial_live/_blank again.
             events.append(AIRoomEvent(
                 text=render.reload_banner(),
-                keyboard_hint=default_hint,
+                keyboard_hint=turn_hint,
                 loadout_text=render.loadout_line(self.state),
             ))
-        # Final state summary + keyboard hint (handler rebuilds reply
-        # markup from the live state, so we just flag which mode).
+        # Final state summary uses the same hint as the rest of the
+        # burst — the handler rebuilds reply markup from the live state.
         summary = render.game_summary(self.state, self.human_name, self.human_id)
-        if done:
-            hint = "game_over"
-        else:
-            hint = "human_turn" if self.is_human_turn else mid_hint
-        events.append(AIRoomEvent(text=summary, keyboard_hint=hint))
+        events.append(AIRoomEvent(text=summary, keyboard_hint=turn_hint))
         return events
 
     def _compose_ai_events(

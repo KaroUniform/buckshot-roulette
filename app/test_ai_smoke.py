@@ -210,6 +210,59 @@ def test_terminal_events_use_game_over_keyboard():
     print(f"ok  terminal_events_use_game_over_keyboard  ({len(events)} events)")
 
 
+def test_human_action_passing_turn_uses_wait_hint():
+    """Regression for bugbot 50bfb404: when the human's (non-terminal)
+    action passes control to the AI — e.g. shooting the opponent with
+    a live shell that doesn't kill — the human-event hints must be
+    'wait', not 'human_turn'. Otherwise the handler calls
+    `human_turn_keyboard` with `state.current_player=ai_id` and paints
+    a legality-mangled keyboard until the next event replaces it.
+
+    We test `_compose_human_events` directly so we observe the hints
+    BEFORE `_drain_ai` runs and flips the turn back. In production this
+    matters because the handler sends each event with its own keyboard
+    before the next event overwrites it.
+    """
+    policy = AIPolicy.get()
+    # Find a seed where the human goes first, then step the engine
+    # manually so we can inspect `_compose_human_events` output with
+    # state.current_player = ai_id and done = False.
+    for seed in range(100):
+        r = AIRoom.new(human_name="Test", policy=policy, seed=seed)
+        if not r.is_human_turn:
+            continue
+        r.state.players[r.ai_id].hp = 2  # survive the shot
+        if not r.state.shells:
+            continue
+        r.state.shells[0] = True  # live on top
+        legal = r.engine.legal_actions()
+        if not legal[int(Action.SHOOT_OPPONENT)]:
+            continue
+        prev_reloads = r.state.n_reloads
+        _, _, done, info = r.engine.step(int(Action.SHOOT_OPPONENT))
+        if done:
+            continue
+        if r.is_human_turn:
+            # Still the human (e.g. engine granted keep-turn via some
+            # item state we didn't foresee). We need the turn to flip.
+            continue
+        events = r._compose_human_events(
+            Action.SHOOT_OPPONENT, info, prev_reloads, done,
+        )
+        bad = [e for e in events if e.keyboard_hint != "wait"]
+        assert not bad, (
+            f"all human-event hints should be 'wait' after turn passes, "
+            f"got: {[(e.text[:50], e.keyboard_hint) for e in events]}"
+        )
+        print(f"ok  human_action_passing_turn_uses_wait_hint  "
+              f"(seed={seed}, {len(events)} events)")
+        return
+    raise AssertionError(
+        "couldn't find a seed that reproduces a non-terminal human-to-AI "
+        "turn transition — investigate if this fires in CI"
+    )
+
+
 def test_adrenaline_fallback_shoot_parses():
     """Regression for bugbot 3286fcd8: when adrenaline is active but no
     picks are usable, the engine falls back to making SHOOT_OPPONENT /
@@ -300,6 +353,7 @@ def main() -> int:
         test_loadout_text_pinned_at_event_time,
         test_glass_phone_reveal_to_human,
         test_terminal_events_use_game_over_keyboard,
+        test_human_action_passing_turn_uses_wait_hint,
         test_adrenaline_fallback_shoot_parses,
         test_ai_terminal_events_use_game_over_keyboard,
         test_games_terminate,
