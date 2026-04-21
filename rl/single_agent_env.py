@@ -352,12 +352,12 @@ class SingleAgentBuckshotEnv(gym.Env):
         # one of each remaining if n_shells > 2.
         tail_n = n_shells - 1
         # Tail composition: at least 1 blank so BEER->next-shot can be safe
-        # if agent picks BEER + SHOOT_SELF combo. Guarantee 1 blank in tail.
+        # if agent picks BEER + SHOOT_SELF combo. Since n_shells >= 2 we
+        # always have tail_n >= 1, and rng.integers(0, tail_n) returns a
+        # value in [0, tail_n), giving tail_live <= tail_n - 1 and
+        # therefore tail_blank >= 1 by construction.
         tail_live = int(rng.integers(0, max(1, tail_n)))
         tail_blank = tail_n - tail_live
-        if tail_blank == 0 and tail_n > 0:
-            tail_live -= 1
-            tail_blank = 1
         tail = [True] * tail_live + [False] * tail_blank
         rng.shuffle(tail)
         s.shells = [True] + tail
