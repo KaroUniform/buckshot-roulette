@@ -210,6 +210,73 @@ def test_terminal_events_use_game_over_keyboard():
     print(f"ok  terminal_events_use_game_over_keyboard  ({len(events)} events)")
 
 
+def test_adrenaline_fallback_shoot_parses():
+    """Regression for bugbot 3286fcd8: when adrenaline is active but no
+    picks are usable, the engine falls back to making SHOOT_OPPONENT /
+    SHOOT_SELF legal and the render layer emits 🔼/🔽 buttons. The parser
+    must accept those glyphs in pick-mode or the user is stuck pressing
+    visible buttons that produce 'Make a valid move' forever.
+    """
+    assert emoji_to_action(SHOOT_OPP_GLYPH, adrenaline_active=True) == Action.SHOOT_OPPONENT
+    assert emoji_to_action(SHOOT_SELF_GLYPH, adrenaline_active=True) == Action.SHOOT_SELF
+    # And pick tokens still win when both are present (longest-match
+    # isn't needed here because prefixes don't collide, but verify).
+    assert (
+        emoji_to_action(pick_emoji(Item.HANDSAW), adrenaline_active=True)
+        == Action.PICK_HANDSAW
+    )
+    print("ok  adrenaline_fallback_shoot_parses")
+
+
+def test_ai_terminal_events_use_game_over_keyboard():
+    """Regression for bugbot 92f6089d: when the AI's action ends the
+    game, the kill-shot caption must NOT carry keyboard_hint='wait'.
+    That hint makes `_send_events` paint the '🕓AI is thinking🕓'
+    keyboard and sleep 1.1s before the game-over message — a misleading
+    thinking indicator after the game is already decided.
+    """
+    policy = AIPolicy.get()
+    # Force a scenario: human goes first, immediately USE_HANDCUFF to
+    # skip to AI (if handcuff is available) — but the simplest way is
+    # to directly construct a situation where the AI shoots last.
+    # Cheap trick: hunt for a seed where AI goes first and the human HP
+    # is already 1 after a mutation, then let the AI drain.
+    for seed in range(100):
+        r = AIRoom.new(human_name="Test", policy=policy, seed=seed)
+        if r.is_human_turn:
+            continue  # need AI-first seeds
+        # Drop human to 1 HP and ensure the next shell is live so the AI
+        # (which often shoots opponent on a known-live) ends the game.
+        r.state.players[r.human_id].hp = 1
+        if r.state.shells:
+            r.state.shells[0] = True
+        events = r.start()
+        if r.game_over:
+            # Earlier AI sub-actions (cuff, phone, etc.) legitimately
+            # carry 'wait' because they were intermediate. The bug is
+            # specifically that the step which SETS done=True has
+            # keyboard_hint='wait' — triggering the 1.1s "thinking"
+            # pause between the kill-shot and the game-over message.
+            # The last two events must be the terminal action caption
+            # and the game-over event, both hinting 'game_over'.
+            assert events[-1].keyboard_hint == "game_over", (
+                f"final event should be game_over, got {events[-1]!r}"
+            )
+            assert events[-2].keyboard_hint == "game_over", (
+                f"penultimate event (the terminal AI action) should be "
+                f"game_over, got: {events[-2]!r}"
+            )
+            print(f"ok  ai_terminal_events_use_game_over_keyboard  "
+                  f"(seed={seed}, {len(events)} events)")
+            return
+    # If no seed produced an AI kill-shot after 100 tries the policy is
+    # behaving oddly — surface that rather than silently passing.
+    raise AssertionError(
+        "couldn't find a seed where a mutated HP=1 human dies to an AI "
+        "opening burst; investigate if this fires in CI"
+    )
+
+
 def test_games_terminate():
     policy = AIPolicy.get()
     ai_wins = 0
@@ -233,6 +300,8 @@ def main() -> int:
         test_loadout_text_pinned_at_event_time,
         test_glass_phone_reveal_to_human,
         test_terminal_events_use_game_over_keyboard,
+        test_adrenaline_fallback_shoot_parses,
+        test_ai_terminal_events_use_game_over_keyboard,
         test_games_terminate,
     ]
     failed = 0

@@ -82,9 +82,17 @@ def emoji_to_action(text: str, adrenaline_active: bool) -> Action | None:
     if not text:
         return None
 
-    # In adrenaline pick-mode the ONLY valid inputs are "💉<item>".
-    # Outside pick-mode a bare "💉" means USE_ADRENALINE.
+    # In adrenaline pick-mode valid inputs are "💉<item>" — OR the shoot
+    # glyphs, because the engine's defensive fallback in `legal_actions`
+    # marks SHOOT_OPPONENT / SHOOT_SELF legal when there are no usable
+    # picks (see rl/engine.py). Without accepting shoots here, the
+    # render fallback keyboard (🔼/🔽) would produce inputs the parser
+    # rejects, trapping the user in a "Make a valid move" loop.
     if adrenaline_active:
+        if text.startswith(SHOOT_OPP_GLYPH):
+            return Action.SHOOT_OPPONENT
+        if text.startswith(SHOOT_SELF_GLYPH):
+            return Action.SHOOT_SELF
         if not text.startswith(_PICK_PREFIX):
             return None
         tail = text[len(_PICK_PREFIX):]

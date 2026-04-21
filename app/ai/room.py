@@ -191,7 +191,7 @@ class AIRoom:
             prev_reloads = self.engine.state.n_reloads
             _, _, done, info = self.engine.step(int(action))
 
-            events.extend(self._compose_ai_events(action, info, prev_reloads))
+            events.extend(self._compose_ai_events(action, info, prev_reloads, done))
             if done:
                 events.append(self._game_over_event())
                 return events
@@ -246,13 +246,18 @@ class AIRoom:
         return events
 
     def _compose_ai_events(
-        self, action: Action, info: dict, prev_reloads: int,
+        self, action: Action, info: dict, prev_reloads: int, done: bool,
     ) -> List[AIRoomEvent]:
         from . import render
+        # When the AI action terminates the game, switch every hint to
+        # "game_over" so the handler doesn't paint the "🕓 thinking" key-
+        # board on the kill-shot and then sleep 1.1s before announcing
+        # the result. Symmetric to `_compose_human_events`.
+        mid_hint = "game_over" if done else "wait"
         events: List[AIRoomEvent] = [
             AIRoomEvent(
                 text=render.action_caption(int(action), info, actor="ai"),
-                keyboard_hint="wait",
+                keyboard_hint=mid_hint,
             ),
         ]
         if self.engine.state.n_reloads > prev_reloads:
@@ -263,7 +268,7 @@ class AIRoom:
             # later round instead of the one we want to announce.
             events.append(AIRoomEvent(
                 text=render.reload_banner(),
-                keyboard_hint="wait",
+                keyboard_hint=mid_hint,
                 loadout_text=render.loadout_line(self.state),
             ))
         if self.is_human_turn:
