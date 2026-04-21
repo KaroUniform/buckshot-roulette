@@ -3,10 +3,10 @@
 Sibling to ppo.py. Shares everything except the policy class and the
 training-loop bookkeeping:
 
-  * Rollout buffer gains a `hidden_buf` (1, num_envs, hidden) snapshot per
-    step, captured BEFORE the GRU step, so we can replay the rollout
-    during the PPO epochs with the correct resets. `next_hidden` carries
-    across updates (CleanRL LSTM/GRU pattern).
+  * Rollout snapshots `initial_hidden` (1, num_envs, hidden) once at
+    rollout start, so we can replay each env's T-length sequence during
+    the PPO epochs from the correct h_0. `next_hidden` carries across
+    updates (CleanRL LSTM/GRU pattern).
 
   * Minibatches sample ENVS (not (t, env) pairs): each minibatch is the
     full T-length rollout of a subset of envs, so BPTT flows correctly
@@ -270,14 +270,12 @@ def train(
     rewards_buf = torch.zeros((cfg.num_steps, cfg.num_envs), device=device)
     dones_buf = torch.zeros((cfg.num_steps, cfg.num_envs), device=device)
     values_buf = torch.zeros((cfg.num_steps, cfg.num_envs), device=device)
-    # Hidden state BEFORE each step (shape: (num_steps, 1, num_envs, hidden))
-    # Stored so we can replay the rollout with the stale-data h_0 per
-    # minibatch-of-envs. Strictly speaking we only need h at t=0, but the
-    # per-step log is cheap and helps future debugging (e.g. probing
-    # whether h drifts over long episodes).
-    hidden_buf = torch.zeros(
-        (cfg.num_steps, 1, cfg.num_envs, cfg.hidden), device=device
-    )
+    # Hidden state at rollout t=0 (shape: (1, num_envs, hidden)). Captured
+    # once per rollout and used as h_0 in the PPO update to replay each
+    # env's T-length sequence with BPTT. Per-step snapshots used to live
+    # here too ("future debugging" in earlier revisions), but nothing
+    # reads them, and the per-step write is a real GPU kernel launch.
+    initial_hidden = torch.zeros((1, cfg.num_envs, cfg.hidden), device=device)
     # Aux-target buffer: ground-truth chamber composition (n_live, n_blank)
     # for the obs at each step, used to train the aux head.
     aux_target_buf = (
@@ -328,12 +326,14 @@ def train(
                     pg["lr"] = frac * cfg.learning_rate
 
             # ---- Rollout ----
+            # Snapshot h_0 once at rollout start; the PPO update replays
+            # each env's full T-length sequence from this initial hidden.
+            initial_hidden.copy_(next_hidden)
             for step in range(cfg.num_steps):
                 global_step += cfg.num_envs
                 obs_buf[step] = next_obs
                 mask_buf[step] = next_mask
                 dones_buf[step] = next_done
-                hidden_buf[step] = next_hidden
                 if cfg.aux_chamber and aux_target_buf is not None:
                     aux_target_buf[step] = next_aux
                 if cfg.n_opponents > 0 and opp_id_buf is not None:
@@ -427,8 +427,8 @@ def train(
                     mb_returns = returns[:, mb_envs_t]
                     mb_values = values_buf[:, mb_envs_t]
                     mb_dones = dones_buf[:, mb_envs_t]
-                    # h at t=0 for these envs (stored before first step)
-                    mb_h0 = hidden_buf[0, :, mb_envs_t].contiguous()
+                    # h at t=0 for these envs (snapshot from before first step)
+                    mb_h0 = initial_hidden[:, mb_envs_t].contiguous()
 
                     mb_opp_ids = (
                         opp_id_buf[:, mb_envs_t]
