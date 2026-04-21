@@ -427,6 +427,33 @@ def test_probe_no_adrenaline_for_inverter_when_saw_only_on_opp():
     print("ok  probe_no_adrenaline_for_inverter_when_saw_only_on_opp")
 
 
+def test_probe_no_adrenaline_for_cuff_when_saw_only_on_opp():
+    """KNOWN LIVE + opp at 3HP, opp has CUFF + HANDSAW, we have ADRENALINE
+    but no own saw. The cuff branch in adrenaline-pick mode reasons about
+    a kill_in_two_with_saw plan, but stealing CUFF burns our only pick;
+    opp's saw becomes unreachable, so the plan would collapse to a wasted
+    cuff. Expect anything BUT PICK_HANDCUFF (bugbot 15af447a).
+    """
+    e = _setup_engine_for_current_player(seed=37)
+    pid = e.state.current_player
+    me = e.state.players[pid]
+    opp = e.state.players[1 - pid]
+    opp.hp = 3  # in the kill_in_two_with_saw zone (3 - 2 = 1, 1 in [1,2])
+    me.hp = me.max_hp
+    e.state.shells = [True, False, True]  # slot0 known LIVE
+    e.state.known_shells[pid][0] = True
+    me.inventory = _empty_inv()
+    me.inventory[int(Item.ADRENALINE)] = 1
+    opp.inventory = _empty_inv()
+    opp.inventory[int(Item.HANDCUFF)] = 1
+    opp.inventory[int(Item.HANDSAW)] = 1
+    a = _decide(e, np.random.default_rng(37))
+    _assert(a != int(Action.PICK_HANDCUFF),
+            f"opp's saw is unreachable after spending adrenaline on cuff; "
+            f"cuff plan would collapse. got {Action(a).name}")
+    print("ok  probe_no_adrenaline_for_cuff_when_saw_only_on_opp")
+
+
 def test_probe_adrenaline_for_inverter_when_we_own_saw():
     """KNOWN BLANK + opp at 2HP, opp has INVERTER, we own HANDSAW + ADRENALINE.
     Adrenaline → steal INVERTER → flip slot0 blank→live → use OUR saw → shoot
@@ -797,6 +824,7 @@ def main() -> int:
         test_probe_no_cuff_when_direct_shot_kills_opp,
         test_probe_cuff_useful_when_saw_advances_kill,
         test_probe_no_adrenaline_for_inverter_when_saw_only_on_opp,
+        test_probe_no_adrenaline_for_cuff_when_saw_only_on_opp,
         test_probe_adrenaline_for_inverter_when_we_own_saw,
         test_probe_opp_cuffed_aggressive_lethal,
         test_probe_known_live_lethal_one_shot_skips_cuff_at_full_hp,

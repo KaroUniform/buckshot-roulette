@@ -311,9 +311,13 @@ def _strong_baseline_decision(
         )
         # Saw advances kill but doesn't finish (opp_hp 3 or 4, saw → 1 or 2):
         # cuff IS useful here because we need a second shot to finish.
+        # Require saw already in OUR inventory: spending adrenaline on the
+        # cuff burns the only pick we get this turn, so a saw that's only
+        # pickable from opp would become unreachable and the 2-shot plan
+        # would collapse. (bugbot 15af447a)
         kill_in_two_with_saw = (
             slot0_known and slot0_live and dmg_mult < 2
-            and (_me_has(obs, Item.HANDSAW) or mask[int(Action.PICK_HANDSAW)])
+            and _me_has(obs, Item.HANDSAW)
             and opp_hp - 2 >= 1 and opp_hp - 2 <= 2
         )
         if (
