@@ -165,7 +165,11 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
             except Exception as exc:
                 print(f"[train] WARNING: could not load extra opponent {path}: {exc}")
 
-    # Vectorized env
+    # Vectorized env. FF (this trainer) is maintenance-mode; honest_obs
+    # was added later for recurrent runs and is NOT a PPOConfig field.
+    # Pin to hack-obs (47-d) explicitly so the call matches make_env_fn's
+    # current signature and a future PPOConfig.honest_obs addition would
+    # require a deliberate edit here, not a silent default.
     envs = gym.vector.SyncVectorEnv(
         [
             make_env_fn(
@@ -177,6 +181,7 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
                 cfg.heal_bonus,
                 cfg.round_survive_bonus,
                 cfg.scenario_replay_prob,
+                honest_obs=False,
             )
             for i in range(cfg.num_envs)
         ]

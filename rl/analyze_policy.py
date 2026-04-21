@@ -262,9 +262,11 @@ def _scenario_cuff_before_saw_combo(e: BuckshotEngine) -> None:
 
 def _scenario_inverter_flip_known_live_to_save_life(e: BuckshotEngine) -> None:
     """Agent at 1 HP, opp at FULL HP, next shell KNOWN LIVE. SHOOT_OPP
-    deals 1 dmg (opp still alive) → opp kills me. USE_INVERTER flips
-    live→blank: I shoot_self for free turn, next shell is live, kill.
-    Optimal: USE_INVERTER (survival > tiny damage)."""
+    deals 1 dmg (opp still alive) → opp kills me on their turn.
+    USE_INVERTER flips slot 0 live→blank, so the chamber becomes
+    [blank, blank] — no live shells remain in the round. Either side
+    can shoot without dealing damage; round survives intact.
+    Optimal: USE_INVERTER (survival > 1 damage to a full-HP opponent)."""
     me = e.state.players[e.state.current_player]
     opp = e.state.players[1 - e.state.current_player]
     me.hp = 1
