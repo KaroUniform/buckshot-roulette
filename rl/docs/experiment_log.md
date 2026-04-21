@@ -1713,7 +1713,79 @@ snapshots. Pool.manifest() broadcasts correctly via async env
 500 eps to get a clean winrate CI.
 
 pid 4075, run_dir rl_runs/E20_exploiter_vs_E19_s20, seed=20.
-Post-mortem to follow.
+
+### Post-mortem (2026-04-21, after relaunch on post-PR#4 code)
+
+Original launch crashed immediately with BrokenPipeError because
+the exploiter monkey-patch shoved a CUDA-resident factory into
+the worker_seed_pool, which can't survive spawn pickle (PR #4
+fixed this via `exclude_rule_based` flag — no monkey-patch).
+Relaunched 2026-04-21 10:42 UTC, ran cleanly to completion.
+
+**Training trajectory (2M steps, 488 updates):**
+- Pool started at 1 (E19-best only), grew to 9 as exploiter
+  snapshots accumulated every 25 updates (max_pool_snapshots=8).
+- return_50 oscillated around 0 ± 0.2 throughout: no consistent
+  positive trend. vs rule-based baselines reached plateau at
+  ~0.94/0.80/0.74 (random/aggr/cons) by u=200 and held.
+- entropy stabilised at 0.12-0.15, approx_kl < 1e-5 by end.
+
+**Clean H2H (1000 eps each, seed=2020, fresh hidden per episode):**
+
+| matchup                           | exploiter winrate | z-score vs 0.5 |
+|-----------------------------------|-------------------|----------------|
+| exploiter_final vs E19-best_u2160 | **0.435**         | −4.1 (p<0.001) |
+| exploiter_final vs E19-final_u2440| **0.425**         | −4.7 (p<0.001) |
+
+**The exploiter LOST. Both checkpoints of E19 beat it decisively.**
+
+**Why this is NOT a clean "E19 is Nash" signal — protocol flaw:**
+
+By u=200 the pool had 9 entries (1 E19-best + 8 self-snapshots
+of the exploiter). Under uniform-weight sampling, only ~11% of
+training episodes pitted the exploiter against the actual target
+— the other 89% was self-play vs earlier exploiter selves.
+
+The training trajectory makes this clear: the exploiter learned
+competent general Buckshot play (0.94 vs random, 0.80 vs
+aggressive), which is exactly what self-play + a single
+high-quality opponent would produce. But without *dedicated*
+exposure to E19, it never built a counter-strategy.
+
+**Refined reading:** E19 is stronger than a 2M-step
+self-play-heavy generalist. Not yet evidence of Nash plateau —
+the exploiter was handicapped. Options for E21 below.
+
+**Interpretation-rule update:** the pre-set <52% = Nash rule
+assumed a pure exploiter. With the pool-dilution effect, a <52%
+exploiter is consistent with (a) E19 near-Nash OR (b) protocol
+failure. Disambiguate with E21.
+
+### What to do in E21 (candidates, picked one to run next)
+
+1. **True exploiter** — `snapshot_every_updates=999` (no
+   self-snapshots, pool stays at size 1). Scrappy but clean: if
+   this still loses >52% to E19, that's the Nash signal. ~30 min
+   wall-clock, trivial config change. **Picking this one.**
+2. **Weighted exploiter** — keep self-snapshots for diversity
+   but weight E19 at 5×1 (so ~55% of episodes vs target). Middle
+   ground between pure target and E20's mix. Needs a config
+   knob for per-extras weight, ~1h code.
+3. **Larger exploiter** — hidden=512, 5M steps, pool=1 (target
+   only). If a strictly bigger net still can't beat E19,
+   strongest evidence for architectural-capacity ceiling. ~2h
+   on H100.
+4. **Defer exploiter; move on to other E21 candidates** from
+   E19 post-mortem (early-stopping infra, league-pin E18,
+   perturbed-chamber eval).
+
+Next action: spawn E21 = option 1 (`snapshot_every=999`, pool=1,
+2M steps, seed=21, same hidden=256). Expected run time ~20-25
+min on H100 GPU 1. If E21 also loses >52%, strong Nash evidence.
+If E21 wins >55%, E20's pool dilution was the bug and the
+Nash hypothesis is unproven.
+
+Raw H2H JSON: `~/e20_h2h.json` on beeline.
 
 ## Async vector envs (infra PR, 2026-04-21)
 
