@@ -144,8 +144,22 @@ def wait_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 
-def human_turn_keyboard(state: GameState, human_id: int) -> ReplyKeyboardMarkup:
-    return _keyboard_for(state, human_id)
+def human_turn_keyboard(state: GameState, human_id: int):
+    """Return the human's keyboard, or a safe fallback on terminal state.
+
+    Defensive: if the state is terminal (or the engine somehow reports no
+    legal actions and no inventory), `_keyboard_for` produces an empty
+    ReplyKeyboardMarkup which Telegram rejects. Callers should normally
+    use `keyboard_hint="game_over"` when the engine reports done, but we
+    guard here so a stray human_turn hint on a terminal state doesn't
+    crash the handler.
+    """
+    if getattr(state, "done", False):
+        return ReplyKeyboardRemove()
+    kb = _keyboard_for(state, human_id)
+    if not kb.keyboard:
+        return ReplyKeyboardRemove()
+    return kb
 
 
 def game_summary(state: GameState, human_name: str, human_id: int) -> str:
@@ -212,8 +226,23 @@ def action_caption(action: int, info: dict, *, actor: str) -> str:
     if a == Action.USE_HANDCUFF:
         return f"🔗 {subj} cuffed {obj_opp} — skip the next turn"
     if a == Action.USE_GLASS:
+        # Human sees the reveal; AI's caption stays generic so we don't
+        # leak the AI's private knowledge to the human watching.
+        if actor == "human":
+            shell = info.get("glass")
+            if shell == "live":
+                return f"🔍 You inspected the next shell — 💥 live"
+            if shell == "blank":
+                return f"🔍 You inspected the next shell — 🫧 blank"
         return f"🔍 {subj} inspected the next shell"
     if a == Action.USE_PHONE:
+        if actor == "human":
+            phone = info.get("phone")
+            if phone is not None:
+                pos, kind = phone
+                glyph = "💥" if kind == "live" else "🫧"
+                # 1-index for display: "#1" = the next shell in the chamber.
+                return f"📞 You phoned — shell #{int(pos) + 1} is {glyph} {kind}"
         return f"📞 {subj} phoned in a shell hint"
     if a == Action.USE_PILLS:
         kind = info.get("pills")

@@ -158,7 +158,7 @@ class AIRoom:
         prev_reloads = self.engine.state.n_reloads
         state, reward, done, info = self.engine.step(int(action))
 
-        events = self._compose_human_events(action, info, prev_reloads)
+        events = self._compose_human_events(action, info, prev_reloads, done)
         if done:
             events.append(self._game_over_event())
             return events
@@ -212,12 +212,19 @@ class AIRoom:
         return f"{header}\n\n{body}"
 
     def _compose_human_events(
-        self, action: Action, info: dict, prev_reloads: int,
+        self, action: Action, info: dict, prev_reloads: int, done: bool,
     ) -> List[AIRoomEvent]:
         from . import render
         events: List[AIRoomEvent] = []
+        # When the engine has marked the game terminal on this step, every
+        # event we emit must render under the game-over keyboard — the
+        # live state has no legal actions and `human_turn_keyboard` would
+        # produce an empty ReplyKeyboardMarkup that Telegram rejects.
+        default_hint = "game_over" if done else "human_turn"
+        mid_hint = "game_over" if done else "wait"
         events.append(AIRoomEvent(
             text=render.action_caption(int(action), info, actor="human"),
+            keyboard_hint=default_hint,
         ))
         if self.engine.state.n_reloads > prev_reloads:
             # Snapshot the new round's declaration NOW — deferring to
@@ -225,12 +232,16 @@ class AIRoom:
             # AI reload mutates round_initial_live/_blank again.
             events.append(AIRoomEvent(
                 text=render.reload_banner(),
+                keyboard_hint=default_hint,
                 loadout_text=render.loadout_line(self.state),
             ))
         # Final state summary + keyboard hint (handler rebuilds reply
         # markup from the live state, so we just flag which mode).
         summary = render.game_summary(self.state, self.human_name, self.human_id)
-        hint = "human_turn" if self.is_human_turn else "wait"
+        if done:
+            hint = "game_over"
+        else:
+            hint = "human_turn" if self.is_human_turn else mid_hint
         events.append(AIRoomEvent(text=summary, keyboard_hint=hint))
         return events
 

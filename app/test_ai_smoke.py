@@ -139,6 +139,77 @@ def test_loadout_text_pinned_at_event_time():
     print(f"ok  loadout_text_pinned_at_event_time  (pinned={pinned_before!r})")
 
 
+def test_glass_phone_reveal_to_human():
+    """Regression for bugbot 2e3d1a25: USE_GLASS / USE_PHONE captions
+    must surface the `info` dict contents to the human — otherwise the
+    items are visually useless. AI captions stay generic so we don't
+    leak the AI's private knowledge across the table.
+    """
+    from ai.render import action_caption
+
+    # Human side — both kinds of reveals should be visible.
+    human_live = action_caption(int(Action.USE_GLASS), {"glass": "live"}, actor="human")
+    assert "live" in human_live and "💥" in human_live, human_live
+    human_blank = action_caption(int(Action.USE_GLASS), {"glass": "blank"}, actor="human")
+    assert "blank" in human_blank and "🫧" in human_blank, human_blank
+
+    human_phone = action_caption(int(Action.USE_PHONE), {"phone": (3, "live")}, actor="human")
+    # Position is 1-indexed for display: pos=3 → "#4".
+    assert "#4" in human_phone and "live" in human_phone, human_phone
+
+    # AI side — no private info should leak.
+    ai_glass = action_caption(int(Action.USE_GLASS), {"glass": "live"}, actor="ai")
+    assert "live" not in ai_glass and "blank" not in ai_glass, ai_glass
+    ai_phone = action_caption(int(Action.USE_PHONE), {"phone": (3, "live")}, actor="ai")
+    assert "#4" not in ai_phone and "live" not in ai_phone, ai_phone
+
+    # Missing info key shouldn't crash (defensive fallback to generic text).
+    human_glass_missing = action_caption(int(Action.USE_GLASS), {}, actor="human")
+    assert "inspected" in human_glass_missing
+    print("ok  glass_phone_reveal_to_human")
+
+
+def test_terminal_events_use_game_over_keyboard():
+    """Regression for bugbot 0c83ef58: when the human's action ends the
+    game, every event in the resulting list must carry
+    keyboard_hint='game_over'. Otherwise the handler asks
+    `human_turn_keyboard` for a done-state keyboard which is empty →
+    Telegram rejects the reply_markup.
+    """
+    policy = AIPolicy.get()
+    # Hunt through seeds until we find one where the human is the first
+    # mover and a single SHOOT_OPPONENT on seed-0 shells lands as a lethal
+    # live shot — saves us from mutating engine internals.
+    r = AIRoom.new(human_name="Test", policy=policy, seed=7)
+    r.start()
+    # Force the scenario: set opponent HP to 1 so any live shot is lethal,
+    # and make sure it's the human's turn with a live shell up next.
+    while not r.is_human_turn and not r.game_over:
+        # Drain AI turns until control returns; AIRoom.start already did
+        # an opening drain so this is usually a no-op.
+        break
+    assert r.is_human_turn, "seed=7 should hand the opening to the human"
+    r.state.players[r.ai_id].hp = 1
+    # Ensure chamber has at least one live next; if the top is blank,
+    # swap positions so the next shot is lethal. Engine represents shells
+    # as a list of bools where True=live.
+    if not r.state.shells or not r.state.shells[0]:
+        for i, s in enumerate(r.state.shells):
+            if s:
+                r.state.shells[0], r.state.shells[i] = r.state.shells[i], r.state.shells[0]
+                break
+    assert r.state.shells and r.state.shells[0], "need a live shell on top"
+
+    events = r.step_human(Action.SHOOT_OPPONENT)
+    assert r.game_over, "shot should have ended the game"
+    bad = [e for e in events if e.keyboard_hint != "game_over"]
+    assert not bad, (
+        f"every event after a kill-shot must hint game_over, got: "
+        f"{[(e.text[:40], e.keyboard_hint) for e in events]}"
+    )
+    print(f"ok  terminal_events_use_game_over_keyboard  ({len(events)} events)")
+
+
 def test_games_terminate():
     policy = AIPolicy.get()
     ai_wins = 0
@@ -160,6 +231,8 @@ def main() -> int:
         test_actions_roundtrip,
         test_policy_loads,
         test_loadout_text_pinned_at_event_time,
+        test_glass_phone_reveal_to_human,
+        test_terminal_events_use_game_over_keyboard,
         test_games_terminate,
     ]
     failed = 0
