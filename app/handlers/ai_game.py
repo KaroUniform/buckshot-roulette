@@ -34,9 +34,7 @@ router = Router()
 _AI_ROOMS: Dict[int, "AIRoom"] = {}
 
 
-def _send_keyboard(
-    hint: str, room: "AIRoom | None", show_loadout: bool = False,
-):
+def _send_keyboard(hint: str, room: "AIRoom | None"):
     """Build the ReplyKeyboardMarkup for an event."""
     from ai import render
     if hint == "wait":
