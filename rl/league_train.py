@@ -1,5 +1,13 @@
 """Generational population-based league training.
 
+STATUS: feedforward-only (FF) tooling from E4 era. Hardcodes
+`rl.ppo` (FF trainer). All experiments since E11 use `rl.ppo_recurrent`
+(GRU-based), which has its own snapshot-into-pool league mechanism
+that supersedes this script. Kept for historical reproducibility of
+E4 results; main() emits an explicit warning on launch so a
+casual user can't silently train FF when they meant recurrent.
+(bugbot 3a9528ac)
+
 Implements Option A from the mid-session experiment plan: train N agents
 with different entropy coefficients in parallel, and between generations
 seed each agent's opponent pool with the final policies from every agent
@@ -103,6 +111,16 @@ def main() -> int:
     p.add_argument("--eval-every", type=int, default=25)
     p.add_argument("--eval-episodes", type=int, default=100)
     a = p.parse_args()
+
+    print(
+        "[league_train] WARNING: this script trains FEEDFORWARD policies "
+        "(rl.ppo). All current experiments (E11+) use the recurrent "
+        "trainer (rl.ppo_recurrent), which has its own league mechanism "
+        "via snapshot-into-pool. This script is preserved for E4 "
+        "historical reproducibility. If you meant to train recurrent "
+        "agents, abort and use rl.ppo_recurrent directly.",
+        file=sys.stderr,
+    )
 
     gpus = [int(g) for g in a.gpus.split(",")]
     if len(gpus) < len(AGENTS):

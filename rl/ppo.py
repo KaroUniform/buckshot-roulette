@@ -337,8 +337,9 @@ def train(cfg: PPOConfig, extra_opponent_ckpts: Optional[list[str]] = None) -> A
                 os.makedirs(ckpts_dir, exist_ok=True)
                 torch.save(snap.state_dict(), os.path.join(ckpts_dir, f"{snap_name}.pt"))
                 # Trim oldest snapshots beyond cap (in pool only — keep all on disk).
-                # Go through pool.remove() so mutations take the internal lock.
-                snap_names = [n for n in pool.opponents if n.startswith("snapshot_")]
+                # Use names_with_prefix() + remove() so both the read and the
+                # mutation honor pool._lock.
+                snap_names = pool.names_with_prefix("snapshot_")
                 while len(snap_names) > cfg.max_pool_snapshots:
                     pool.remove(snap_names.pop(0))
 

@@ -389,6 +389,14 @@ def _strong_baseline_decision(
             and opp_hp - 2 >= 1   # not wasting all of saw on excess
             and opp_hp - 2 <= 2   # progresses to one-shot range
         ):
+            # Cuff before SAW is intentional here: sequence is cuff → saw →
+            # shoot, opp drops to 1-2 HP (still alive, cuff consumed
+            # correctly), then opp's turn is skipped, then our second shot
+            # finishes. n_shells >= 2 guarantees a second shot opportunity
+            # in the current chamber (post-cuff, post-shot, shells[0] is
+            # gone but shells[1] remains). Heuristic doesn't peek at
+            # shells[1] polarity — accepting the risk of a blank second
+            # shot in exchange for opp not retaliating. (bugbot d86fc263)
             if (
                 mask[int(Action.USE_HANDCUFF)]
                 and not opp_cuffed
@@ -857,6 +865,16 @@ class OpponentPool:
     def __len__(self) -> int:
         with self._lock:
             return len(self.opponents)
+
+    def names_with_prefix(self, prefix: str) -> list[str]:
+        """Return opponent names starting with `prefix`, taking the lock.
+
+        Used by the league snapshot trimmer to enumerate "snapshot_*" entries
+        without poking `self.opponents` from the outside (which would dodge
+        the documented thread-safety contract). Insertion order preserved.
+        """
+        with self._lock:
+            return [n for n in self.opponents if n.startswith(prefix)]
 
     def manifest(self) -> list[tuple[str, str, float, str]]:
         """Serializable description of the pool for AsyncVectorEnv worker sync.

@@ -249,10 +249,16 @@ def train(
 
     obs_dim = envs.single_observation_space["observation"].shape[0]
     aux_dim = 2 if cfg.aux_chamber else 0
+    # `embed` is the obs-projection dim (input to the GRU). Default in
+    # RecurrentActorCritic is None → falls back to `hidden`. We pin it
+    # explicitly so the round-trip with load_recurrent_policy (which
+    # auto-detects embed_dim from obs_embed.0.weight.shape[0]) is
+    # documented at the construction site, not implicit in the default.
     policy = RecurrentActorCritic(
         obs_dim,
         NUM_ACTIONS,
         hidden=cfg.hidden,
+        embed=cfg.hidden,
         aux_dim=aux_dim,
         n_opponents=cfg.n_opponents,
     ).to(device)
@@ -518,7 +524,7 @@ def train(
                 )
                 snap_factory.ckpt_path = snap_ckpt_path  # type: ignore[attr-defined]
                 pool.add(snap_name, snap_factory, weight=1.0)
-                snap_names = [n for n in pool.opponents if n.startswith("snapshot_")]
+                snap_names = pool.names_with_prefix("snapshot_")
                 while len(snap_names) > cfg.max_pool_snapshots:
                     pool.remove(snap_names.pop(0))
                 # Broadcast new pool to all worker envs so their next
