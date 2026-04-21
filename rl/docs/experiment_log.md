@@ -1787,6 +1787,91 @@ Nash hypothesis is unproven.
 
 Raw H2H JSON: `~/e20_h2h.json` on beeline.
 
+## E21 — pure-target exploiter (2026-04-21)
+
+Follow-up to E20 to disambiguate the "E19 near-Nash vs protocol-flaw"
+question. Same config as E20 except `--snapshot-every 999`, so the
+pool stays at size 1 throughout training — 100% of episodes are vs
+the target, no self-snapshot dilution. Same seed=21, same hidden=256,
+same 2M steps.
+
+**Training trajectory:**
+- Pool=1 confirmed for all 488 updates (vs E20's 1→9 growth).
+- return_50 oscillated around 0 ± 0.2 throughout (similar noise
+  pattern to E20). vs rule-based baselines stable at ~0.93/0.80/0.72.
+- entropy stabilised at 0.13-0.17, approx_kl < 1e-5 by end.
+
+**Clean H2H (1000 eps each, seed=2121):**
+
+| matchup                       | E20 mixed | **E21 pure** | Δ     | z vs 50% | p       |
+|-------------------------------|-----------|--------------|-------|----------|---------|
+| vs E19-best (u=2160)          | 0.435     | **0.460**    | +2.5  | −2.53    | 0.011   |
+| vs E19-final (u=2440)         | 0.425     | **0.477**    | +5.2  | −1.45    | 0.15 NS |
+
+**Interpretation:**
+
+1. **Pool dilution WAS a real confound.** E21 beat E20 by +2.5pp and
+   +5.2pp respectively. The lift is exactly what the "only 11% of
+   episodes vs target" analysis predicted.
+
+2. **E19 is near-Nash against a same-architecture exploiter.**
+   Even with 100% target exposure and 2M steps, E21 significantly
+   loses to E19-best (z=−2.5, p=0.011). The gap shrank from E20's
+   −6.5pp to E21's −4.0pp, but didn't close.
+
+3. **E19-final is weaker than E19-best and is tie-able.** E21 vs
+   E19-final came out at 0.477 — statistically indistinguishable
+   from 50%. This matches E19's own post-mortem observation that
+   training past u=2160 hurt (u=2440 is the "overfit past peak"
+   checkpoint; E19-final lost its edge to post-peak-snapshots it
+   was training against).
+
+**Updated verdict on the interpretation-rule set before E20:**
+- Pre-set rule: "<52% vs main → near-Nash." Result: 46.0% vs
+  E19-best, clearly <52%. **Nash hypothesis supported** against
+  the best E19 checkpoint. This crystallises the earlier hunch
+  from E18→E19 ("we're at the Nash plateau for hidden=256").
+
+**What this means for E22+:**
+
+- Further hidden=256 recurrent self-play is unlikely to help.
+  ~46% vs a frozen target after 2M targeted steps means the
+  architecture, not the training data, is the bottleneck.
+- To beat E19 meaningfully, we need to relax the constraint:
+  either more capacity (hidden=384 or 512), more context
+  (transformer over multi-round history — the only thing our
+  current GRU clearly can't do), or more observability (honest
+  obs + aux-chamber, a path E11b/E12b already partially explored).
+- The product-integration path (wire E19 into the Telegram bot
+  and ship it) is now well-justified: we've shown there's no
+  cheap exploit within the current architecture.
+
+**What NOT to do:**
+
+- Another exploiter run at hidden=256. We have the Nash signal.
+- Naive scaling to hidden=512 without a better experimental
+  target. The E18→E19 jump was already at the plateau;
+  hidden=512 without architecture change likely plateaus the
+  same place, just slower.
+
+**Candidate E22s (preference order):**
+
+1. **Transformer over episode history** (hidden still 256 per
+   head, but 4 heads × 4 layers, multi-round window 10-15
+   turns). ~1-2 days implementation; clearest path to beating
+   the current ceiling if long-range memory is the bottleneck.
+2. **Honest-obs with aux-chamber scaling.** Take E19 config,
+   swap to `--honest-obs --aux-chamber --aux-coef 0.1`,
+   re-train from scratch. E12b was a partial win at hidden=128;
+   hidden=256 never tried with honest obs + aux. 1 day wall-clock.
+3. **Ship E19 as the Telegram bot opponent.** Wire the recurrent
+   policy (with embedding active) into `app/` so users can play
+   it. Forces us to actually handle inference-time opponent-id
+   (hard — we can't tell opponent archetype mid-game). Lowest
+   experimental value but highest user-facing value.
+
+Raw H2H JSON: `~/e21_h2h.json` on beeline.
+
 ## Async vector envs (infra PR, 2026-04-21)
 
 Drafted during E19's wait. Four-commit chunk into PR #3 that swaps
