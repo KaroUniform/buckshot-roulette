@@ -91,6 +91,12 @@ class RecurrentPPOConfig:
     # id into the embedding so the trunk can condition on opponent
     # identity. Set to N_OPPONENT_IDS (5) to match the env's ID table.
     n_opponents: int = 0
+    # Exploiter training: if True, drop NAMED_OPPONENTS from the parent pool
+    # after `extra_opponent_ckpts` load, so the agent trains ONLY vs the
+    # extras (typically one frozen target) instead of a mixed league. The
+    # worker seed pool keeps NAMED_OPPONENTS for spawn-safe init; the
+    # first post-sync rollout samples exclusively from extras.
+    exclude_rule_based: bool = False
     save_dir: str = "rl_runs"
     run_name: str = field(default_factory=lambda: f"ppo_recurrent_{int(time.time())}")
 
@@ -215,6 +221,23 @@ def train(
                     print(f"[train] added FEEDFORWARD extra opponent {label} from {path}")
             except Exception as exc:
                 print(f"[train] WARNING: could not load extra opponent {path}: {exc}")
+
+    if cfg.exclude_rule_based:
+        # Exploiter mode: after extras are loaded, drop NAMED_OPPONENTS
+        # from the PARENT pool so pool.manifest() (broadcast to workers
+        # via sync_pool) carries only the frozen target(s). The worker
+        # seed pool below still includes NAMED_OPPONENTS — it needs some
+        # rule-based entry to sample from during the env.reset() call
+        # inside each spawn-worker's thunk, which fires before the
+        # parent's sync_pool broadcast arrives.
+        for name in list(NAMED_OPPONENTS.keys()):
+            pool.remove(name)
+        if len(pool) == 0:
+            raise ValueError(
+                "exclude_rule_based=True requires at least one "
+                "extra_opponent_ckpts entry; parent pool would be empty."
+            )
+        print(f"[train] exclude_rule_based: pool trimmed to {len(pool)} extras only")
 
     # AsyncVectorEnv runs one worker process per env (context="spawn" so
     # CUDA in the parent doesn't poison workers). The workers get a
@@ -661,6 +684,14 @@ def parse_args() -> RecurrentPPOConfig:
              f"({N_OPPONENT_IDS}) that matches the env's ID map. If both are "
              "passed, --n-opponents wins.",
     )
+    p.add_argument(
+        "--exclude-rule-based",
+        action="store_true",
+        help="After loading --extra-opponent-ckpts, drop NAMED_OPPONENTS "
+             "from the pool so training sees ONLY the extras. Used by the "
+             "exploiter (rl.exploiter) to train target-only; requires at "
+             "least one --extra-opponent-ckpts entry.",
+    )
     a = p.parse_args()
     cfg = RecurrentPPOConfig(
         total_timesteps=a.total_timesteps,
@@ -691,6 +722,7 @@ def parse_args() -> RecurrentPPOConfig:
         n_opponents=a.n_opponents if a.n_opponents > 0 else (
             N_OPPONENT_IDS if a.opp_embed else 0
         ),
+        exclude_rule_based=a.exclude_rule_based,
     )
     if a.run_name:
         cfg.run_name = a.run_name
