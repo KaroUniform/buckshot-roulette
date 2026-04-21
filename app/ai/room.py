@@ -61,7 +61,6 @@ class AIRoom:
     engine: BuckshotEngine
     policy: AIPolicy
     hidden: object  # torch.Tensor, opaque to avoid torch import here
-    ai_done_prev: bool = False
 
     @classmethod
     def new(
@@ -86,7 +85,6 @@ class AIRoom:
             engine=engine,
             policy=policy,
             hidden=policy.initial_hidden(),
-            ai_done_prev=False,
         )
 
     # ---- helpers ----
@@ -183,10 +181,13 @@ class AIRoom:
                 break
             obs = self.engine.observation(self.ai_id)
             mask = self.engine.legal_actions()
+            # `done_prev=False` for every step of a room — a room covers
+            # exactly one episode (the game evaporates on terminal and
+            # rematches construct a fresh AIRoom), so there's no
+            # previous-terminal boundary for the GRU to reset on.
             action, self.hidden = self.policy.act(
-                obs, mask, self.hidden, done_prev=self.ai_done_prev,
+                obs, mask, self.hidden, done_prev=False,
             )
-            self.ai_done_prev = False
 
             prev_reloads = self.engine.state.n_reloads
             _, _, done, info = self.engine.step(int(action))

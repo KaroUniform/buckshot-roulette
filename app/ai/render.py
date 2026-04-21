@@ -60,18 +60,18 @@ def loadout_line(state: GameState) -> str:
     return f"Loadout: 💥×{live}  🫧×{blank}"
 
 
-def _keyboard_for(state: GameState, human_id: int) -> ReplyKeyboardMarkup:
-    """Build the reply keyboard the human sees based on engine legality."""
-    from rl.engine import BuckshotEngine
+def _keyboard_for(engine, human_id: int) -> ReplyKeyboardMarkup:
+    """Build the reply keyboard the human sees based on engine legality.
 
-    # Recompute legality from state (not from an engine instance) because
-    # AIRoom holds the engine and we only want state here.
-    # Cheap: reconstructing a transient engine with the shared state
-    # lets us reuse BuckshotEngine.legal_actions without duplicating its
-    # ~40 lines of gating logic.
-    stub = BuckshotEngine.__new__(BuckshotEngine)
-    stub.state = state
-    legal = stub.legal_actions()
+    Takes the live engine (not a free-standing state) because
+    `legal_actions` is defined as a method and may grow dependencies on
+    other engine attributes (rng, honest_obs, etc.); a previous
+    `__new__`-stub approach worked only by coincidence of the current
+    method body and would silently break if legality gained new
+    instance-attribute reads.
+    """
+    state = engine.state
+    legal = engine.legal_actions()
 
     builder = ReplyKeyboardBuilder()
 
@@ -144,8 +144,11 @@ def wait_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 
-def human_turn_keyboard(state: GameState, human_id: int):
+def human_turn_keyboard(engine, human_id: int):
     """Return the human's keyboard, or a safe fallback on terminal state.
+
+    Takes the live engine so legality can be queried on an authentic
+    engine instance (not a `__new__` stub — see `_keyboard_for`).
 
     Defensive: if the state is terminal (or the engine somehow reports no
     legal actions and no inventory), `_keyboard_for` produces an empty
@@ -154,9 +157,9 @@ def human_turn_keyboard(state: GameState, human_id: int):
     guard here so a stray human_turn hint on a terminal state doesn't
     crash the handler.
     """
-    if getattr(state, "done", False):
+    if getattr(engine.state, "done", False):
         return ReplyKeyboardRemove()
-    kb = _keyboard_for(state, human_id)
+    kb = _keyboard_for(engine, human_id)
     if not kb.keyboard:
         return ReplyKeyboardRemove()
     return kb

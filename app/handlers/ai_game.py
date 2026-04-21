@@ -47,7 +47,7 @@ def _send_keyboard(hint: str, room: "AIRoom | None"):
         return types.ReplyKeyboardMarkup(keyboard=rematch_kb, resize_keyboard=True)
     if room is None:
         return types.ReplyKeyboardRemove()
-    return render.human_turn_keyboard(room.state, room.human_id)
+    return render.human_turn_keyboard(room.engine, room.human_id)
 
 
 async def _send_events(bot: Bot, chat_id: int, room: "AIRoom", events):
