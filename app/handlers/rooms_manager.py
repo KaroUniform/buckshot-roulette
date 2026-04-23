@@ -1,5 +1,6 @@
 import random
 import re
+import logging
 from aiogram import F, Bot, Router, types
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -21,6 +22,8 @@ from utils.edit_message_with_delay import edit_message
 
 router = Router()
 MANAGER = RoomsManager()
+logger = logging.getLogger(__name__)
+WIN_STICKER_ID = None  # Paste sticker file_id here, for example: "CAACAgIAAxkBA..."
 
 
 @router.message(Command("find"), StateFilter(None))
@@ -281,6 +284,13 @@ async def send_game_end_message(
     bot: Bot, room, keyboard_die, keyboard_win, loser: Player, winner: Player
 ):
     await bot.send_message(loser.data.chat_id, "⚰️You died", reply_markup=keyboard_die)
+
+    if WIN_STICKER_ID:
+        try:
+            await bot.send_sticker(winner.data.chat_id, sticker=WIN_STICKER_ID)
+        except Exception:
+            logger.exception("Failed to send winner sticker to chat_id=%s", winner.data.chat_id)
+
     await bot.send_message(
         winner.data.chat_id, "💼Congratulations, you've won!", reply_markup=keyboard_win
     )
