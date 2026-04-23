@@ -23,7 +23,7 @@ from utils.edit_message_with_delay import edit_message
 router = Router()
 MANAGER = RoomsManager()
 logger = logging.getLogger(__name__)
-WIN_STICKER_ID = None  # Paste sticker file_id here, for example: "CAACAgIAAxkBA..."
+WIN_STICKER_ID = "CAACAgIAAxkBAAEBuf1p6kaACU2hkSZ0LlN9J_XaRVPWOwACSTEAAoTfaEtmyI9fpwx3RzsE"
 
 
 @router.message(Command("find"), StateFilter(None))
