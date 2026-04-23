@@ -1,110 +1,85 @@
-"""Telegram handler for the single-player AI mode.
-
-Routing flow:
-    /ai                       → start a new AIRoom (lazy-loads E19)
-    Text during `in_ai_game`  → forwarded to AIRoom.step_human
-    /leave or 🚪Leave         → shared with the multiplayer handler;
-                                this module registers no leave logic
-
-The AI policy is imported lazily inside handlers so the bot still
-boots in environments without torch / without the checkpoint. The
-error is caught and surfaced to the user as a one-line message.
-"""
+"""Telegram handler for the single-player AI mode."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict
 
 from aiogram import Bot, F, Router, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from ai.policy import AIUnavailable, AIPolicy
 from core.game_states import GameStates
+from gameplay import render as gameplay_render
+from gameplay.session import EngineSession, SessionEvent
+from handlers.winner_sticker import send_winner_sticker
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 
-
-# chat_id → AIRoom. Kept in-process; rooms evaporate on restart, which
-# is fine for single-player (no one else loses if a game is lost).
-_AI_ROOMS: Dict[int, "AIRoom"] = {}
+_AI_ROOMS: Dict[int, EngineSession] = {}
+DEFAULT_AI_WAIT_PAUSE_MS = 1100
 
 
-def _send_keyboard(hint: str, room: "AIRoom | None"):
-    """Build the ReplyKeyboardMarkup for an event."""
-    from ai import render
-    if hint == "wait":
-        return render.wait_keyboard()
-    if hint == "game_over":
+def _keyboard_for_event(session: EngineSession, seat: int, event: SessionEvent):
+    if event.keyboard_hint == "game_over":
         rematch_kb = [
             [types.KeyboardButton(text="🚪Leave")],
             [types.KeyboardButton(text="/ai")],
         ]
         return types.ReplyKeyboardMarkup(keyboard=rematch_kb, resize_keyboard=True)
-    if room is None:
-        return types.ReplyKeyboardRemove()
-    return render.human_turn_keyboard(room.engine, room.human_id)
+    if event.keyboard_hint == "human_turn":
+        return gameplay_render.turn_keyboard(session.engine, seat)
+    return gameplay_render.wait_keyboard("🕓AI is thinking🕓")
 
 
-async def _send_events(bot: Bot, chat_id: int, room: "AIRoom", events):
-    """Dispatch room-emitted events to Telegram in order.
+async def _send_events(bot: Bot, chat_id: int, session: EngineSession, events: list[SessionEvent]):
+    seat = session.seat_for_chat(chat_id)
+    if seat is None:
+        return
 
-    A small async sleep between AI actions slows the bot enough that a
-    human can read what happened. Not cosmetic-only: without this, a
-    multi-item AI turn fires 4-5 messages in the same animation frame
-    and the user misses intermediate state.
+    sticker_sent = False
+    for event in events:
+        if (
+            not sticker_sent
+            and event.event_type == "game_over"
+            and session.ai_won()
+        ):
+            # Product requirement: this sticker is only used in `/ai`,
+            # and it is sent to the human chat when the human loses to
+            # the AI. PvP winners should not receive it.
+            await send_winner_sticker(bot, chat_id)
+            sticker_sent = True
 
-    Loadout strings are pinned at event-construction time (see
-    `AIRoomEvent.loadout_text`), not re-rendered here, because this
-    coroutine awaits between sends — the live `room.state` may have
-    already advanced to a later reload by the time we announce the
-    earlier round.
-    """
-    final_keyboard = None
-    for ev in events:
-        kb = _send_keyboard(ev.keyboard_hint, room)
-        await bot.send_message(chat_id, ev.text, reply_markup=kb)
-        if ev.loadout_text is not None:
-            # No `protect_content` — the loadout is just the public
-            # round announcement; the earlier flag prevented users from
-            # copying or forwarding it without any real purpose.
-            await bot.send_message(chat_id, ev.loadout_text)
-        final_keyboard = kb
-        # Pause slightly between consecutive AI sub-actions so the user
-        # has time to read them. Room-emitted events may request a
-        # longer pause (e.g. round boundaries); otherwise fall back to
-        # the default inter-action beat whenever the wait keyboard is
-        # up.
-        if ev.pause_after_ms > 0:
-            await asyncio.sleep(ev.pause_after_ms / 1000)
-        elif ev.keyboard_hint == "wait":
-            await asyncio.sleep(1.1)
-    return final_keyboard
+        await bot.send_message(
+            chat_id,
+            event.text,
+            reply_markup=_keyboard_for_event(session, seat, event),
+        )
+        if event.pause_after_ms > 0:
+            await asyncio.sleep(event.pause_after_ms / 1000)
+        elif event.keyboard_hint == "wait":
+            await asyncio.sleep(DEFAULT_AI_WAIT_PAUSE_MS / 1000)
 
 
 @router.message(StateFilter(None, GameStates.idle, GameStates.in_ai_game), Command("ai"))
 async def start_ai_game(message: Message, bot: Bot, state: FSMContext):
-    # Drop any previous AI game cleanly — /ai is also the rematch command.
     _AI_ROOMS.pop(message.chat.id, None)
 
     try:
-        from ai.policy import AIPolicy, AIUnavailable  # noqa: F401
-        from ai.room import AIRoom
-    except ImportError as exc:
-        logger.exception("AI module import failed")
+        policy = AIPolicy.get()
+    except AIUnavailable as exc:
+        logger.exception("AI policy unavailable")
         await message.answer(
-            "AI mode requires the `torch` dependency. Install it or ask the "
-            f"operator to do so. (error: {exc})",
+            "AI mode requires the `torch` dependency and the checkpoint. "
+            f"(error: {exc})",
         )
         return
-
-    try:
-        policy = AIPolicy.get()
     except Exception as exc:  # pragma: no cover
         logger.exception("AIPolicy failed to load")
         await message.answer(
@@ -112,19 +87,17 @@ async def start_ai_game(message: Message, bot: Bot, state: FSMContext):
         )
         return
 
-    room = AIRoom.new(
+    session = EngineSession.new_vs_ai(
         human_name=message.from_user.first_name or "Player",
+        human_chat_id=message.chat.id,
         policy=policy,
     )
-    _AI_ROOMS[message.chat.id] = room
+    _AI_ROOMS[message.chat.id] = session
     await state.set_state(GameStates.in_ai_game)
 
-    events = room.start()
-    await _send_events(bot, message.chat.id, room, events)
-    # Opening burst can in principle end the match (e.g. an AI that
-    # goes first chains items and kills the human on move one). Guard
-    # the same way the turn handler does so we still record it.
-    await _record_if_ended(message, room)
+    dispatch = session.start()
+    await _send_events(bot, message.chat.id, session, dispatch.get(message.chat.id, []))
+    await _record_if_ended(message)
 
 
 @router.message(
@@ -134,36 +107,27 @@ async def start_ai_game(message: Message, bot: Bot, state: FSMContext):
     F.text.not_contains("/"),
 )
 async def play_ai_turn(message: Message, bot: Bot, state: FSMContext):
-    room = _AI_ROOMS.get(message.chat.id)
-    if room is None:
-        # Orphaned state (bot restarted mid-game). Clear and prompt.
+    session = _AI_ROOMS.get(message.chat.id)
+    if session is None:
         await state.clear()
         await message.answer("This game session expired. Use /ai to start a new one.")
         return
 
-    from ai.actions import emoji_to_action
+    dispatch = session.handle_text(message.chat.id, message.text)
+    await _send_events(bot, message.chat.id, session, dispatch.get(message.chat.id, []))
 
-    action = emoji_to_action(
-        message.text, adrenaline_active=room.state.adrenaline_active,
-    )
-    if action is None:
-        await message.answer("Make a valid move.")
-        return
-
-    events = room.step_human(action)
-    await _send_events(bot, message.chat.id, room, events)
-
-    await _record_if_ended(message, room)
+    await _record_if_ended(message)
 
 
-async def _record_if_ended(message: Message, room: "AIRoom") -> None:
+async def _record_if_ended(message: Message) -> None:
     """If the room is terminal, persist the match and drop the room.
 
     Safe to call on non-terminal states — becomes a no-op. Record first,
     pop second, so a stats-store crash doesn't leave the room orphaned
     with no way to retry the record.
     """
-    if not room.game_over:
+    session = _AI_ROOMS.get(message.chat.id)
+    if session is None or not session.game_over:
         return
     # Guard the stats write behind try/except so a transient DB issue
     # (disk full, locked file) can't poison the user's game-over UX —
@@ -173,19 +137,19 @@ async def _record_if_ended(message: Message, room: "AIRoom") -> None:
 
         store = await get_stats()
         ended_at = datetime.now(timezone.utc)
-        started = room.started_at or ended_at
+        started = session.started_at or ended_at
         duration_ms = int((ended_at - started).total_seconds() * 1000)
         await store.record(MatchRecord(
             ended_at=ended_at,
             chat_id=message.chat.id,
             user_id=(message.from_user.id if message.from_user else None),
-            human_name=room.human_name,
-            ai_won=(room.state.winner != room.human_id),
-            human_went_first=room.human_went_first,
-            n_human_turns=room.n_human_turns,
-            n_ai_actions=room.n_ai_actions,
-            n_reloads=int(room.state.n_reloads),
-            seed=room.seed,
+            human_name=session.names[0],
+            ai_won=session.ai_won(),
+            human_went_first=session.human_went_first,
+            n_human_turns=session.n_human_turns,
+            n_ai_actions=session.n_ai_actions,
+            n_reloads=int(session.state.n_reloads),
+            seed=session.seed,
             duration_ms=max(0, duration_ms),
         ))
     except Exception:  # pragma: no cover — defensive
