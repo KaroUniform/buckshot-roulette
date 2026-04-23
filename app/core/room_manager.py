@@ -67,6 +67,16 @@ class RoomsManager:
         room_id = self.get_room_id_by_player(chat_id)
         return self.get_session(room_id)
 
+    def get_room_slot_by_player(self, chat_id: int) -> Optional[RoomSlot]:
+        room_id = self.PLAYERS_TO_ROOMS.get(chat_id, None)
+        if room_id is None:
+            return None
+        return self.ROOMS.get(room_id, None)
+
+    def player_is_waiting(self, chat_id: int) -> bool:
+        room = self.get_room_slot_by_player(chat_id)
+        return room is not None and room.session is None
+
     def get_room_id_by_player(self, chat_id: int):
         room_id = self.PLAYERS_TO_ROOMS.get(chat_id, None)
         if room_id is None:

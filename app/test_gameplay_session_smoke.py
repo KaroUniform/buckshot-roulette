@@ -17,6 +17,8 @@ APP_DIR = os.path.abspath(os.path.dirname(__file__))
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
+from core.room_manager import RoomsManager
+from handlers import rooms_manager as rooms_handler
 from handlers import ai_game
 from gameplay.actions import SHOOT_OPP_GLYPH, SHOOT_SELF_GLYPH, item_emoji
 from gameplay.session import AI_MOVE_BUDGET, EngineSession, Participant, SessionEvent
@@ -122,6 +124,32 @@ class _FakeAISession:
         return False
 
 
+class _FakeState:
+    def __init__(self):
+        self.cleared = False
+        self.state_value = None
+        self.data = None
+
+    async def clear(self):
+        self.cleared = True
+
+    async def set_state(self, value):
+        self.state_value = value
+
+    async def set_data(self, value):
+        self.data = value
+
+
+class _FakeMessage:
+    def __init__(self, chat_id: int, text: str = "hello"):
+        self.chat = type("Chat", (), {"id": chat_id})()
+        self.text = text
+        self.answers = []
+
+    async def answer(self, text, **kwargs):
+        self.answers.append((text, kwargs))
+
+
 def test_ai_session_forces_human_first():
     session = EngineSession.new_vs_ai(
         human_name="Karo",
@@ -177,9 +205,34 @@ def test_ai_wait_events_keep_default_pause():
     print("ok  ai_wait_events_keep_default_pause")
 
 
+def test_waiting_player_text_keeps_room_membership():
+    previous_manager = rooms_handler.MANAGER
+    manager = RoomsManager()
+    rooms_handler.MANAGER = manager
+    try:
+        room_id = 654321
+        manager.create_room(room_id)
+        manager.reg_player_in_room("Alice", 606, room_id)
+
+        message = _FakeMessage(606)
+        state = _FakeState()
+
+        asyncio.run(rooms_handler.in_game(message, bot=None, state=state))
+
+        assert not state.cleared
+        assert manager.get_room_id_by_player(606) == room_id
+        assert message.answers, "waiting player should get feedback"
+        assert "waiting for the second player" in message.answers[0][0].lower()
+        assert message.answers[0][1]["parse_mode"] == "Markdown"
+        print("ok  waiting_player_text_keeps_room_membership")
+    finally:
+        rooms_handler.MANAGER = previous_manager
+
+
 if __name__ == "__main__":
     test_pvp_session_starts_and_accepts_current_player_move()
     test_ai_session_forces_human_first()
     test_ai_move_budget_stays_iterative()
     test_ai_wait_events_keep_default_pause()
+    test_waiting_player_text_keeps_room_membership()
     print("ok  gameplay_session_smoke")

@@ -18,6 +18,13 @@ router = Router()
 MANAGER = RoomsManager()
 
 
+def _waiting_for_opponent_text(room_id: int) -> str:
+    return (
+        f"Still waiting for the second player in room `{room_id}`. "
+        "Send them the code or use /leave."
+    )
+
+
 async def _place_player_in_waiting_room(message: Message, state: FSMContext, room_id: int):
     MANAGER.create_room(room_id)
     MANAGER.reg_player_in_room(message.from_user.first_name, message.chat.id, room_id)
@@ -184,8 +191,22 @@ async def join(message: Message, bot: Bot, state: FSMContext):
 async def in_game(message: Message, bot: Bot, state: FSMContext):
     try:
         session = MANAGER.get_session_by_player(message.chat.id)
-    except Exception:
+    except ValueError:
+        if MANAGER.player_is_waiting(message.chat.id):
+            room_id = MANAGER.get_room_id_by_player(message.chat.id)
+            await message.answer(
+                _waiting_for_opponent_text(room_id),
+                parse_mode="Markdown",
+            )
+            return
+        MANAGER.del_player_from_rooms(message.chat.id)
         await state.clear()
+        await message.answer("This room is no longer active. Use /join or /find to start again.")
+        return
+    except Exception:
+        MANAGER.del_player_from_rooms(message.chat.id)
+        await state.clear()
+        await message.answer("This room is no longer active. Use /join or /find to start again.")
         return
 
     dispatch = session.handle_text(message.chat.id, message.text)
