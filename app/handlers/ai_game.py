@@ -23,6 +23,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from core.game_states import GameStates
+from handlers.winner_sticker import send_winner_sticker
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,12 @@ async def _send_events(bot: Bot, chat_id: int, room: "AIRoom", events):
     final_keyboard = None
     for ev in events:
         kb = _send_keyboard(ev.keyboard_hint, room)
+        if (
+            ev.keyboard_hint == "game_over"
+            and room.game_over
+            and room.state.winner == room.ai_id
+        ):
+            await send_winner_sticker(bot, chat_id)
         await bot.send_message(chat_id, ev.text, reply_markup=kb)
         if ev.loadout_text is not None:
             # No `protect_content` — the loadout is just the public
