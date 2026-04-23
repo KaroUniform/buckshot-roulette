@@ -44,6 +44,7 @@ async def main() -> None:
 
     dp.include_routers(
         handlers.ai_game.router,     # AI-mode messages — state-filtered
+        handlers.ai_stats.router,    # /stats — state-agnostic, public read
         handlers.rooms_manager.router,
         handlers.start.router,
         handlers.echo.router,

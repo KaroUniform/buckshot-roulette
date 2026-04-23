@@ -415,6 +415,148 @@ def test_ai_terminal_events_use_game_over_keyboard():
     )
 
 
+def test_ai_action_counter_increments_during_drain():
+    """Regression: `n_ai_actions` must count every engine step the AI
+    takes inside `_drain_ai`, not stay at zero. Bugbot flagged that the
+    DB column previously named `n_turns` stored only human turns — the
+    split-counter fix relies on this counter actually moving.
+    """
+    policy = AIPolicy.get()
+    # Drive a full game with random-legal human. The AI will take at
+    # least one action (opening or response); count must end > 0.
+    seed = 0
+    rng = random.Random(seed)
+    room = AIRoom.new(human_name="Tester", policy=policy, seed=seed)
+    room.start()
+    while not room.game_over:
+        if not room.is_human_turn:
+            raise RuntimeError("AI didn't return control")
+        # Any legal action, bias to shoots so the game ends.
+        legal = room.engine.legal_actions()
+        legal_actions = [Action(i) for i in range(len(legal)) if legal[i]]
+        shoots = [a for a in legal_actions if a in (Action.SHOOT_OPPONENT, Action.SHOOT_SELF)]
+        action = rng.choice(shoots) if shoots and rng.random() < 0.55 else rng.choice(legal_actions)
+        room.step_human(action)
+    assert room.n_ai_actions > 0, (
+        f"AI never acted during the game? n_ai_actions={room.n_ai_actions}"
+    )
+    assert room.n_human_turns > 0, room.n_human_turns
+    print(f"ok  ai_action_counter_increments_during_drain  "
+          f"(human={room.n_human_turns}, ai={room.n_ai_actions})")
+
+
+def test_ai_room_captures_first_mover():
+    """Regression for bugbot: `human_went_first` must reflect the actual
+    engine-randomised starting player, not `human_id == 0`. The engine
+    uses numpy PCG64 for `current_player`, AIRoom uses Mersenne Twister
+    for `human_id`; seeding both with the same int gives uncorrelated
+    picks, so the old slot-based heuristic was wrong ~half the time.
+    """
+    policy = AIPolicy.get()
+    # Scan enough seeds that both "slot heuristic agrees with truth"
+    # and "slot heuristic disagrees with truth" cases actually appear —
+    # otherwise the test would silently pass on a fortuitous subset.
+    saw_agree = False
+    saw_disagree = False
+    for seed in range(50):
+        r = AIRoom.new(human_name="Test", policy=policy, seed=seed)
+        truth = r.engine.state.current_player == r.human_id
+        assert r.human_went_first == truth, (
+            f"seed={seed}: captured={r.human_went_first}, truth={truth} "
+            f"(current_player={r.engine.state.current_player}, "
+            f"human_id={r.human_id})"
+        )
+        slot_heuristic = r.human_id == 0
+        if slot_heuristic == truth:
+            saw_agree = True
+        else:
+            saw_disagree = True
+    assert saw_agree and saw_disagree, (
+        "50 seeds didn't produce both branches — widen the range "
+        "before declaring the regression covered"
+    )
+    print("ok  ai_room_captures_first_mover")
+
+
+def test_stats_store_roundtrip():
+    """Persist a few synthetic matches and assert summary + leaderboard
+    line up with the raw inserts. Uses a temp-file DB so WAL / schema
+    behavior matches production; in-memory SQLite has per-connection
+    DBs which would defeat the point.
+    """
+    import asyncio
+    import tempfile
+    from datetime import datetime, timezone
+    from ai import stats as _stats
+
+    path = tempfile.mktemp(suffix=".sqlite3")
+    try:
+        async def scenario():
+            store = _stats.StatsStore(path)
+            await store.init_schema()
+            now = datetime.now(timezone.utc)
+            # 3 matches: alice beats the AI once in 2 tries, bob loses.
+            records = [
+                _stats.MatchRecord(
+                    ended_at=now, chat_id=100, user_id=1, human_name="Alice",
+                    ai_won=True, human_went_first=True,
+                    n_human_turns=14, n_ai_actions=12,
+                    n_reloads=3, seed=42, duration_ms=45000,
+                ),
+                _stats.MatchRecord(
+                    ended_at=now, chat_id=100, user_id=1, human_name="Alice",
+                    ai_won=False, human_went_first=False,
+                    n_human_turns=9, n_ai_actions=11,
+                    n_reloads=2, seed=43, duration_ms=30000,
+                ),
+                _stats.MatchRecord(
+                    ended_at=now, chat_id=200, user_id=2, human_name="Bob",
+                    ai_won=True, human_went_first=True,
+                    n_human_turns=11, n_ai_actions=9,
+                    n_reloads=2, seed=44, duration_ms=40000,
+                ),
+            ]
+            for r in records:
+                await store.record(r)
+            summary = await store.summary()
+            assert summary.total == 3, summary
+            assert summary.ai_wins == 2, summary
+            assert summary.human_wins == 1, summary
+            # `last_total_moves` must be SUM of human+ai counters,
+            # not just human turns — the last insert was Bob's
+            # 11 + 9 = 20.
+            assert summary.last_total_moves == 20, summary
+            # Leaderboard: only Alice (Bob has 0 wins vs AI).
+            top = await store.top_humans(limit=5)
+            assert len(top) == 1, top
+            assert top[0].name == "Alice"
+            assert top[0].wins == 1 and top[0].games == 2
+        asyncio.run(scenario())
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            p = path + suffix
+            if os.path.exists(p):
+                os.remove(p)
+    print("ok  stats_store_roundtrip")
+
+
+def test_wilson_ci_edges():
+    from ai.stats import wilson_ci
+    # Zero trials — degenerate but must not crash.
+    assert wilson_ci(0, 0) == (0.0, 0.0)
+    # All successes on N=10 — upper bound is 1.0, lower is < 1.0
+    lo, hi = wilson_ci(10, 10)
+    assert 0 < lo < 1 and hi == 1.0, (lo, hi)
+    # Balanced coin, N=100 — interval straddles 0.5
+    lo, hi = wilson_ci(50, 100)
+    assert lo < 0.5 < hi, (lo, hi)
+    # Monotonicity: more data → tighter interval
+    lo10, hi10 = wilson_ci(9, 10)
+    lo100, hi100 = wilson_ci(90, 100)
+    assert (hi100 - lo100) < (hi10 - lo10)
+    print("ok  wilson_ci_edges")
+
+
 def test_games_terminate():
     policy = AIPolicy.get()
     ai_wins = 0
@@ -443,6 +585,10 @@ def main() -> int:
         test_human_action_passing_turn_uses_wait_hint,
         test_adrenaline_fallback_shoot_parses,
         test_ai_terminal_events_use_game_over_keyboard,
+        test_wilson_ci_edges,
+        test_ai_action_counter_increments_during_drain,
+        test_ai_room_captures_first_mover,
+        test_stats_store_roundtrip,
         test_games_terminate,
     ]
     failed = 0

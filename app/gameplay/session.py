@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import random
 from typing import Dict, List, Optional, Sequence
 
 from rl.engine import Action, BuckshotEngine
@@ -40,6 +42,11 @@ class EngineSession:
         ai_policy=None,
         ai_hidden=None,
         ai_mode: bool = False,
+        seed: Optional[int] = None,
+        started_at: Optional[datetime] = None,
+        human_went_first: bool = False,
+        n_human_turns: int = 0,
+        n_ai_actions: int = 0,
     ) -> None:
         self.participants = list(participants)
         self.engine = engine
@@ -47,6 +54,11 @@ class EngineSession:
         self.ai_policy = ai_policy
         self.ai_hidden = ai_hidden
         self.ai_mode = ai_mode
+        self.seed = seed
+        self.started_at = started_at
+        self.human_went_first = human_went_first
+        self.n_human_turns = n_human_turns
+        self.n_ai_actions = n_ai_actions
         self._chat_to_seat = {
             participant.chat_id: seat
             for seat, participant in enumerate(self.participants)
@@ -83,6 +95,8 @@ class EngineSession:
         policy,
         seed: Optional[int] = None,
     ) -> "EngineSession":
+        if seed is None:
+            seed = random.SystemRandom().randint(0, 2**31 - 1)
         engine = BuckshotEngine(seed=seed, honest_obs=policy.uses_honest_obs)
         engine.reset()
         engine.state.current_player = 0
@@ -96,6 +110,9 @@ class EngineSession:
             ai_policy=policy,
             ai_hidden=policy.initial_hidden(),
             ai_mode=True,
+            seed=seed,
+            started_at=datetime.now(timezone.utc),
+            human_went_first=True,
         )
 
     @property
@@ -211,6 +228,10 @@ class EngineSession:
         actor_is_ai: bool,
         auto_drain_ai: bool = True,
     ) -> Dict[int, List[SessionEvent]]:
+        if actor_is_ai:
+            self.n_ai_actions += 1
+        else:
+            self.n_human_turns += 1
         prev_reloads = self.state.n_reloads
         _, _, done, info = self.engine.step(int(action))
 

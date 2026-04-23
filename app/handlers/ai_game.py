@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Dict
 
 from aiogram import Bot, F, Router, types
@@ -93,6 +94,7 @@ async def start_ai_game(message: Message, bot: Bot, state: FSMContext):
 
     dispatch = session.start()
     await _send_events(bot, message.chat.id, session, dispatch.get(message.chat.id, []))
+    await _record_if_ended(message)
 
 
 @router.message(
@@ -111,7 +113,47 @@ async def play_ai_turn(message: Message, bot: Bot, state: FSMContext):
     dispatch = session.handle_text(message.chat.id, message.text)
     await _send_events(bot, message.chat.id, session, dispatch.get(message.chat.id, []))
 
-    if session.game_over:
+    await _record_if_ended(message)
+
+
+async def _record_if_ended(message: Message) -> None:
+    """If the room is terminal, persist the match and drop the room.
+
+    Safe to call on non-terminal states — becomes a no-op. Record first,
+    pop second, so a stats-store crash doesn't leave the room orphaned
+    with no way to retry the record.
+    """
+    session = _AI_ROOMS.get(message.chat.id)
+    if session is None or not session.game_over:
+        return
+    # Guard the stats write behind try/except so a transient DB issue
+    # (disk full, locked file) can't poison the user's game-over UX —
+    # they just don't see this match in /stats. Log the failure loudly.
+    try:
+        from ai.stats import MatchRecord, get_stats
+
+        store = await get_stats()
+        ended_at = datetime.now(timezone.utc)
+        started = session.started_at or ended_at
+        duration_ms = int((ended_at - started).total_seconds() * 1000)
+        await store.record(MatchRecord(
+            ended_at=ended_at,
+            chat_id=message.chat.id,
+            user_id=(message.from_user.id if message.from_user else None),
+            human_name=session.names[0],
+            ai_won=session.ai_won(),
+            human_went_first=session.human_went_first,
+            n_human_turns=session.n_human_turns,
+            n_ai_actions=session.n_ai_actions,
+            n_reloads=int(session.state.n_reloads),
+            seed=session.seed,
+            duration_ms=max(0, duration_ms),
+        ))
+    except Exception:  # pragma: no cover — defensive
+        logger.exception("failed to record match stats")
+    finally:
+        # Always drop the room — the match is over either way. State
+        # stays `in_ai_game` so /ai rematch flow works.
         _AI_ROOMS.pop(message.chat.id, None)
 
 

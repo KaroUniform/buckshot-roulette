@@ -165,6 +165,10 @@ cython_debug/
 rl_runs/
 wandb/
 
+# Docker compose deploy volume mount — holds stats.sqlite3 + WAL sidecar
+# files. Only generated on a running bot host; must never enter git.
+data/
+
 # Personal experiment launchers (hardcoded paths, GPU pins).
 # Naming convention: e<number>[suffix]_launch.sh — e.g. e11a_launch.sh, e2_launch.sh.
 e[0-9]*_launch.sh

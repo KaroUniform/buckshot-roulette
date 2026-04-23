@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from rl.engine import Action, BuckshotEngine, NUM_ACTIONS
@@ -74,6 +75,22 @@ class AIRoom:
     engine: BuckshotEngine
     policy: AIPolicy
     hidden: object  # torch.Tensor, opaque to avoid torch import here
+    # Stats-related fields. None-defaults so existing callers that
+    # don't pass them continue to work; `.new()` always populates.
+    seed: Optional[int] = None
+    started_at: Optional[datetime] = None
+    n_human_turns: int = 0
+    # Every engine step driven from inside `_drain_ai` counts here,
+    # including adrenaline pick-followups and chained items — match
+    # `n_human_turns`' granularity so `n_human_turns + n_ai_actions`
+    # faithfully reports total game length for analytics.
+    n_ai_actions: int = 0
+    # Captured at construction because `engine.state.current_player`
+    # moves every turn — we need the snapshot from before the first
+    # action. The two RNGs (numpy PCG64 in the engine, Mersenne Twister
+    # in AIRoom for `human_id`) are independent even on the same seed,
+    # so "human slot == 0" is NOT the same as "human moved first".
+    human_went_first: bool = False
 
     @classmethod
     def new(
@@ -85,6 +102,10 @@ class AIRoom:
         # Respect the policy's trained obs layout. E19 is "hack" (47-dim).
         # Choose human slot by coin toss so neither side has a home-field
         # advantage; the policy saw both start positions during training.
+        # Always resolve seed to a concrete value so the stats store has
+        # something to record for reproducibility.
+        if seed is None:
+            seed = random.SystemRandom().randint(0, 2**31 - 1)
         rng = random.Random(seed)
         human_id = rng.randint(0, 1)
         engine = BuckshotEngine(
@@ -92,12 +113,19 @@ class AIRoom:
             honest_obs=policy.uses_honest_obs,
         )
         engine.reset()
+        # Snapshot now — `current_player` is mutated every turn, so by
+        # the time `/stats` renders it's meaningless.
+        human_went_first = engine.state.current_player == human_id
         return cls(
             human_id=human_id,
             human_name=human_name,
             engine=engine,
             policy=policy,
             hidden=policy.initial_hidden(),
+            seed=seed,
+            started_at=datetime.now(timezone.utc),
+            n_human_turns=0,
+            human_went_first=human_went_first,
         )
 
     # ---- helpers ----
@@ -168,6 +196,11 @@ class AIRoom:
 
         prev_reloads = self.engine.state.n_reloads
         state, reward, done, info = self.engine.step(int(action))
+        # Count every legal human-applied action as a turn. Adrenaline
+        # pick-followups count separately because each is a distinct
+        # player decision — if the player wants one-count-per-game-round
+        # semantics, a stats migration can post-aggregate by reloads.
+        self.n_human_turns += 1
 
         events = self._compose_human_events(action, info, prev_reloads, done)
         if done:
@@ -204,6 +237,11 @@ class AIRoom:
 
             prev_reloads = self.engine.state.n_reloads
             _, _, done, info = self.engine.step(int(action))
+            # Count every AI-applied action, including adrenaline
+            # pick-followups and chained items. Mirrors the human-side
+            # counter so analytics on `n_human_turns + n_ai_actions`
+            # yields honest total game length.
+            self.n_ai_actions += 1
 
             events.extend(self._compose_ai_events(action, info, prev_reloads, done))
             if done:
