@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS matches (
     human_name TEXT,
     ai_won INTEGER NOT NULL CHECK (ai_won IN (0, 1)),
     human_went_first INTEGER NOT NULL CHECK (human_went_first IN (0, 1)),
-    n_turns INTEGER NOT NULL,
+    n_human_turns INTEGER NOT NULL,
+    n_ai_actions  INTEGER NOT NULL,
     n_reloads INTEGER NOT NULL,
     seed INTEGER,
     duration_ms INTEGER
@@ -53,10 +54,21 @@ class MatchRecord:
     human_name: str
     ai_won: bool
     human_went_first: bool
-    n_turns: int
+    # Split counters — "total game length" is `n_human_turns +
+    # n_ai_actions`; storing them separately keeps the analytics clean
+    # and avoids the old `n_turns` field silently meaning "half of
+    # what its name implies". AI-action count includes every engine
+    # step taken inside `AIRoom._drain_ai` (so chained items and
+    # adrenaline picks each count).
+    n_human_turns: int
+    n_ai_actions: int
     n_reloads: int
     seed: Optional[int]
     duration_ms: int
+
+    @property
+    def total_moves(self) -> int:
+        return self.n_human_turns + self.n_ai_actions
 
 
 @dataclass
@@ -69,7 +81,7 @@ class Summary:
     ai_winrate_hi: float
     last_ended_at: Optional[datetime]
     last_ai_won: Optional[bool]
-    last_n_turns: Optional[int]
+    last_total_moves: Optional[int]  # human turns + AI actions
 
 
 @dataclass
@@ -123,9 +135,10 @@ class StatsStore:
             await db.execute(
                 """INSERT INTO matches (
                     ended_at, chat_id, user_id, human_name,
-                    ai_won, human_went_first, n_turns, n_reloads,
+                    ai_won, human_went_first,
+                    n_human_turns, n_ai_actions, n_reloads,
                     seed, duration_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     m.ended_at.isoformat(),
                     m.chat_id,
@@ -133,7 +146,8 @@ class StatsStore:
                     m.human_name,
                     int(m.ai_won),
                     int(m.human_went_first),
-                    m.n_turns,
+                    m.n_human_turns,
+                    m.n_ai_actions,
                     m.n_reloads,
                     m.seed,
                     m.duration_ms,
@@ -141,8 +155,10 @@ class StatsStore:
             )
             await db.commit()
         logger.info(
-            "match recorded: user=%s ai_won=%s turns=%d reloads=%d seed=%s",
-            m.user_id, m.ai_won, m.n_turns, m.n_reloads, m.seed,
+            "match recorded: user=%s ai_won=%s moves=%d (h=%d/ai=%d) "
+            "reloads=%d seed=%s",
+            m.user_id, m.ai_won, m.total_moves,
+            m.n_human_turns, m.n_ai_actions, m.n_reloads, m.seed,
         )
 
     async def summary(self) -> Summary:
@@ -153,10 +169,11 @@ class StatsStore:
                 row = await cur.fetchone()
             total = int(row[0]) if row else 0
             ai_wins = int(row[1]) if row else 0
-            last_ended = last_aw = last_turns = None
+            last_ended = last_aw = last_moves = None
             if total > 0:
                 async with db.execute(
-                    "SELECT ended_at, ai_won, n_turns "
+                    "SELECT ended_at, ai_won, "
+                    "n_human_turns + n_ai_actions AS total_moves "
                     "FROM matches ORDER BY id DESC LIMIT 1"
                 ) as cur:
                     last = await cur.fetchone()
@@ -167,7 +184,7 @@ class StatsStore:
                     if last_ended.tzinfo is None:
                         last_ended = last_ended.replace(tzinfo=timezone.utc)
                     last_aw = bool(last[1])
-                    last_turns = int(last[2])
+                    last_moves = int(last[2])
         human_wins = total - ai_wins
         ai_winrate = ai_wins / total if total > 0 else 0.0
         lo, hi = wilson_ci(ai_wins, total)
@@ -180,7 +197,7 @@ class StatsStore:
             ai_winrate_hi=hi,
             last_ended_at=last_ended,
             last_ai_won=last_aw,
-            last_n_turns=last_turns,
+            last_total_moves=last_moves,
         )
 
     async def top_humans(self, limit: int = 5) -> List[LeaderRow]:

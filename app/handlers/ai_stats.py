@@ -73,9 +73,9 @@ async def show_stats(message: Message) -> None:
         )
     if summary.last_ended_at is not None:
         who = "AI won" if summary.last_ai_won else "human won"
-        turns = summary.last_n_turns or 0
+        moves = summary.last_total_moves or 0
         lines.append(
-            f"Last: {_ago(summary.last_ended_at)} — {who} ({turns} turns)"
+            f"Last: {_ago(summary.last_ended_at)} — {who} ({moves} moves)"
         )
     lines.append("")
     lines.append("🏆 Top humans")

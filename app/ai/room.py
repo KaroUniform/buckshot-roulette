@@ -80,6 +80,11 @@ class AIRoom:
     seed: Optional[int] = None
     started_at: Optional[datetime] = None
     n_human_turns: int = 0
+    # Every engine step driven from inside `_drain_ai` counts here,
+    # including adrenaline pick-followups and chained items — match
+    # `n_human_turns`' granularity so `n_human_turns + n_ai_actions`
+    # faithfully reports total game length for analytics.
+    n_ai_actions: int = 0
     # Captured at construction because `engine.state.current_player`
     # moves every turn — we need the snapshot from before the first
     # action. The two RNGs (numpy PCG64 in the engine, Mersenne Twister
@@ -232,6 +237,11 @@ class AIRoom:
 
             prev_reloads = self.engine.state.n_reloads
             _, _, done, info = self.engine.step(int(action))
+            # Count every AI-applied action, including adrenaline
+            # pick-followups and chained items. Mirrors the human-side
+            # counter so analytics on `n_human_turns + n_ai_actions`
+            # yields honest total game length.
+            self.n_ai_actions += 1
 
             events.extend(self._compose_ai_events(action, info, prev_reloads, done))
             if done:

@@ -415,6 +415,36 @@ def test_ai_terminal_events_use_game_over_keyboard():
     )
 
 
+def test_ai_action_counter_increments_during_drain():
+    """Regression: `n_ai_actions` must count every engine step the AI
+    takes inside `_drain_ai`, not stay at zero. Bugbot flagged that the
+    DB column previously named `n_turns` stored only human turns — the
+    split-counter fix relies on this counter actually moving.
+    """
+    policy = AIPolicy.get()
+    # Drive a full game with random-legal human. The AI will take at
+    # least one action (opening or response); count must end > 0.
+    seed = 0
+    rng = random.Random(seed)
+    room = AIRoom.new(human_name="Tester", policy=policy, seed=seed)
+    room.start()
+    while not room.game_over:
+        if not room.is_human_turn:
+            raise RuntimeError("AI didn't return control")
+        # Any legal action, bias to shoots so the game ends.
+        legal = room.engine.legal_actions()
+        legal_actions = [Action(i) for i in range(len(legal)) if legal[i]]
+        shoots = [a for a in legal_actions if a in (Action.SHOOT_OPPONENT, Action.SHOOT_SELF)]
+        action = rng.choice(shoots) if shoots and rng.random() < 0.55 else rng.choice(legal_actions)
+        room.step_human(action)
+    assert room.n_ai_actions > 0, (
+        f"AI never acted during the game? n_ai_actions={room.n_ai_actions}"
+    )
+    assert room.n_human_turns > 0, room.n_human_turns
+    print(f"ok  ai_action_counter_increments_during_drain  "
+          f"(human={room.n_human_turns}, ai={room.n_ai_actions})")
+
+
 def test_ai_room_captures_first_mover():
     """Regression for bugbot: `human_went_first` must reflect the actual
     engine-randomised starting player, not `human_id == 0`. The engine
@@ -469,17 +499,20 @@ def test_stats_store_roundtrip():
             records = [
                 _stats.MatchRecord(
                     ended_at=now, chat_id=100, user_id=1, human_name="Alice",
-                    ai_won=True, human_went_first=True, n_turns=14,
+                    ai_won=True, human_went_first=True,
+                    n_human_turns=14, n_ai_actions=12,
                     n_reloads=3, seed=42, duration_ms=45000,
                 ),
                 _stats.MatchRecord(
                     ended_at=now, chat_id=100, user_id=1, human_name="Alice",
-                    ai_won=False, human_went_first=False, n_turns=9,
+                    ai_won=False, human_went_first=False,
+                    n_human_turns=9, n_ai_actions=11,
                     n_reloads=2, seed=43, duration_ms=30000,
                 ),
                 _stats.MatchRecord(
                     ended_at=now, chat_id=200, user_id=2, human_name="Bob",
-                    ai_won=True, human_went_first=True, n_turns=11,
+                    ai_won=True, human_went_first=True,
+                    n_human_turns=11, n_ai_actions=9,
                     n_reloads=2, seed=44, duration_ms=40000,
                 ),
             ]
@@ -489,6 +522,10 @@ def test_stats_store_roundtrip():
             assert summary.total == 3, summary
             assert summary.ai_wins == 2, summary
             assert summary.human_wins == 1, summary
+            # `last_total_moves` must be SUM of human+ai counters,
+            # not just human turns — the last insert was Bob's
+            # 11 + 9 = 20.
+            assert summary.last_total_moves == 20, summary
             # Leaderboard: only Alice (Bob has 0 wins vs AI).
             top = await store.top_humans(limit=5)
             assert len(top) == 1, top
@@ -549,6 +586,7 @@ def main() -> int:
         test_adrenaline_fallback_shoot_parses,
         test_ai_terminal_events_use_game_over_keyboard,
         test_wilson_ci_edges,
+        test_ai_action_counter_increments_during_drain,
         test_ai_room_captures_first_mover,
         test_stats_store_roundtrip,
         test_games_terminate,
