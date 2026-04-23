@@ -23,6 +23,12 @@ from rl.engine import Action, BuckshotEngine, NUM_ACTIONS
 from .policy import AIPolicy
 
 
+# Extra pause the handler should sleep after a round-change banner, on
+# top of the usual "wait"-keyboard sleep. Gives the player time to read
+# the new loadout + inventories before the AI's opening burst arrives.
+RELOAD_PAUSE_MS = 2500
+
+
 @dataclass
 class AIRoomEvent:
     """One step in the game, in chronological order.
@@ -39,10 +45,17 @@ class AIRoomEvent:
     reloaded the chamber and the live state would report the *new*
     round's counts. Pinning the string at event-construction avoids
     that drift.
+
+    `pause_after_ms` lets the room request that the handler sleep for
+    a specific duration after sending this event — used to give round
+    boundaries a longer "take a breath" pause than the default 1.1s
+    between AI sub-actions. 0 means no extra pause (handler still
+    applies the default "wait"-keyboard sleep).
     """
     text: str
     keyboard_hint: str = "human_turn"
     loadout_text: Optional[str] = None
+    pause_after_ms: int = 0
 
 
 @dataclass
@@ -247,11 +260,16 @@ class AIRoom:
         if self.engine.state.n_reloads > prev_reloads:
             # Snapshot the new round's declaration NOW — deferring to
             # handler send-time would show stale counts once a later
-            # AI reload mutates round_initial_live/_blank again.
+            # AI reload mutates round_initial_live/_blank again. The
+            # rich banner also captures the post-distribution inventory
+            # of both players in a single message (user requested "new
+            # items in the same message").
             events.append(AIRoomEvent(
-                text=render.reload_banner(),
+                text=render.reload_banner(
+                    self.state, self.human_name, self.human_id,
+                ),
                 keyboard_hint=turn_hint,
-                loadout_text=render.loadout_line(self.state),
+                pause_after_ms=RELOAD_PAUSE_MS,
             ))
         # Final state summary uses the same hint as the rest of the
         # burst — the handler rebuilds reply markup from the live state.
@@ -281,9 +299,11 @@ class AIRoom:
             # live `state.round_initial_*` would then reflect the
             # later round instead of the one we want to announce.
             events.append(AIRoomEvent(
-                text=render.reload_banner(),
+                text=render.reload_banner(
+                    self.state, self.human_name, self.human_id,
+                ),
                 keyboard_hint=mid_hint,
-                loadout_text=render.loadout_line(self.state),
+                pause_after_ms=RELOAD_PAUSE_MS,
             ))
         if self.is_human_turn:
             # Final summary only when control returns — avoids spamming

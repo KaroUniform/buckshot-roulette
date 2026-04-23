@@ -69,10 +69,19 @@ async def _send_events(bot: Bot, chat_id: int, room: "AIRoom", events):
         kb = _send_keyboard(ev.keyboard_hint, room)
         await bot.send_message(chat_id, ev.text, reply_markup=kb)
         if ev.loadout_text is not None:
-            await bot.send_message(chat_id, ev.loadout_text, protect_content=True)
+            # No `protect_content` — the loadout is just the public
+            # round announcement; the earlier flag prevented users from
+            # copying or forwarding it without any real purpose.
+            await bot.send_message(chat_id, ev.loadout_text)
         final_keyboard = kb
-        # Pause slightly between consecutive AI sub-actions.
-        if ev.keyboard_hint == "wait":
+        # Pause slightly between consecutive AI sub-actions so the user
+        # has time to read them. Room-emitted events may request a
+        # longer pause (e.g. round boundaries); otherwise fall back to
+        # the default inter-action beat whenever the wait keyboard is
+        # up.
+        if ev.pause_after_ms > 0:
+            await asyncio.sleep(ev.pause_after_ms / 1000)
+        elif ev.keyboard_hint == "wait":
             await asyncio.sleep(1.1)
     return final_keyboard
 

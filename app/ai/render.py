@@ -8,7 +8,7 @@ bottom/top button placement.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
@@ -304,8 +304,43 @@ def action_caption(action: int, info: dict, *, actor: str) -> str:
     return f"{subj} took action {a.name}"
 
 
-def reload_banner() -> str:
-    return "🔄 Shotgun reloaded — new round"
+def _inventory_block(state: GameState, player_id: int) -> str:
+    items = inventory_emoji(state, player_id)
+    return " ".join(items) if items else "—"
+
+
+_SEPARATOR = "━━━━━━━━━━━━━━━"
+
+
+def reload_banner(
+    state: Optional[GameState] = None,
+    human_name: Optional[str] = None,
+    human_id: Optional[int] = None,
+) -> str:
+    """Round-change announcement.
+
+    With no args — the legacy compact form, still used as a fallback.
+    With (state, human_name, human_id) — a richer multi-line message
+    that includes the new loadout and both players' current inventory
+    (items are distributed inside `_load_round` so the round-start
+    inventory already reflects whatever was handed out). Pinned at
+    event-construction time in `room.py` so `await` boundaries can't
+    race the next reload into the rendered string.
+    """
+    if state is None or human_name is None or human_id is None:
+        return "🔄 Shotgun reloaded — new round"
+    ai_id = 1 - human_id
+    live = int(state.round_initial_live)
+    blank = int(state.round_initial_blank)
+    return (
+        f"{_SEPARATOR}\n"
+        f"🔄  NEW ROUND\n"
+        f"Shells: 💥×{live}  🫧×{blank}\n"
+        f"\n"
+        f"{human_name}: {_inventory_block(state, human_id)}\n"
+        f"🤖 AI: {_inventory_block(state, ai_id)}\n"
+        f"{_SEPARATOR}"
+    )
 
 
 def game_over_message(state: GameState, human_name: str, human_id: int) -> str:

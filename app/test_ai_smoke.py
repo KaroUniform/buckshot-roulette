@@ -169,6 +169,43 @@ def test_glass_phone_reveal_to_human():
     print("ok  glass_phone_reveal_to_human")
 
 
+def test_reload_banner_renders_inventories_and_pause():
+    """Regression for the UX ask: at round boundaries the reload event
+    must consolidate into a single message (banner + loadout + both
+    inventories) AND request a longer pause so the player can read it
+    before the AI's next burst arrives.
+    """
+    from ai.render import reload_banner
+    from ai.room import RELOAD_PAUSE_MS
+
+    # Legacy zero-arg form still works (used as a fallback).
+    assert "new round" in reload_banner().lower()
+
+    policy = AIPolicy.get()
+    r = AIRoom.new(human_name="Tester", policy=policy, seed=3)
+    r.start()
+    # Force specific declaration values so the assertions are stable
+    # regardless of the seeded RNG's choice.
+    s = r.state
+    s.round_initial_live = 2
+    s.round_initial_blank = 3
+    banner = reload_banner(s, r.human_name, r.human_id)
+
+    assert "Tester" in banner, banner
+    assert "🤖 AI" in banner, banner
+    assert "💥×2" in banner and "🫧×3" in banner, banner
+    # Multi-line with a visible separator.
+    assert "━" in banner, banner
+    assert banner.count("\n") >= 4, banner
+
+    # Pause constant must be meaningfully longer than the default
+    # inter-action beat (1100 ms) — otherwise round boundaries feel
+    # indistinguishable from a blank self-shot.
+    assert RELOAD_PAUSE_MS >= 2000, RELOAD_PAUSE_MS
+    print(f"ok  reload_banner_renders_inventories_and_pause  "
+          f"(banner={banner.splitlines()[1]!r}, pause={RELOAD_PAUSE_MS}ms)")
+
+
 def test_pick_action_captions_include_outcome():
     """Regression for the "куда пропал один выстрел?" report: PICK_<item>
     captions used to say only "💉 stole your X and is using it" — the
@@ -400,6 +437,7 @@ def main() -> int:
         test_policy_loads,
         test_loadout_text_pinned_at_event_time,
         test_glass_phone_reveal_to_human,
+        test_reload_banner_renders_inventories_and_pause,
         test_pick_action_captions_include_outcome,
         test_terminal_events_use_game_over_keyboard,
         test_human_action_passing_turn_uses_wait_hint,
