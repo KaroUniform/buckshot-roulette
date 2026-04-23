@@ -2,3 +2,14 @@ aiogram==3.4.1
 python-dotenv==1.0.0
 pydantic-settings==2.1.0
 numpy==1.24.3
+# Required for /ai mode (loads the E19 RecurrentActorCritic snapshot).
+# CPU-only wheel is enough — inference is <10 ms per call. Install with:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# if you want to avoid pulling CUDA dependencies on the bot host.
+torch>=2.1,<3
+# Optional — only imported when HTTPS_PROXY is set (see utils/httpx_session).
+# aiogram's default aiohttp transport handles TLS-tunnel proxies
+# inconsistently; httpx is used as a drop-in for the proxied path.
+httpx>=0.27,<1
+# Persistent winrate / match-history store for the /ai mode.
+aiosqlite>=0.19,<1

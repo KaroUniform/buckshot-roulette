@@ -21,11 +21,30 @@ async def main() -> None:
         handlers=[logging.StreamHandler()],
         datefmt="%d.%m.%Y %H:%M:%S",
     )
-    bot = Bot(token=config.bot_token.get_secret_value())
+    logger = logging.getLogger(__name__)
+
+    # Optional HTTPS proxy for hosts that can't reach api.telegram.org
+    # directly. compose.yml passes `BOT_PROXY` through as `HTTPS_PROXY`;
+    # if it's unset we fall back to aiogram's default aiohttp transport.
+    # httpx is used (see utils/httpx_session) because aiohttp's handling
+    # of TLS-tunnel proxies is inconsistent.
+    proxy_url = os.getenv("HTTPS_PROXY") or None
+    session = None
+    if proxy_url:
+        from utils.httpx_session import HttpxSession
+        session = HttpxSession(proxy=proxy_url)
+        # Strip credentials before logging — the proxy URL typically
+        # carries `user:password@host:port`.
+        host_tail = proxy_url.split("@")[-1] if "@" in proxy_url else proxy_url
+        logger.info("HTTPS proxy enabled: %s", host_tail)
+
+    bot = Bot(token=config.bot_token.get_secret_value(), session=session)
     dp = Dispatcher(name='main', storage=STORAGE)
     # dp.message.middleware(Debug())
 
     dp.include_routers(
+        handlers.ai_game.router,     # AI-mode messages — state-filtered
+        handlers.ai_stats.router,    # /stats — state-agnostic, public read
         handlers.rooms_manager.router,
         handlers.start.router,
         handlers.echo.router,

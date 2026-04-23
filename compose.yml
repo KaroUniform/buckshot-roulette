@@ -1,0 +1,42 @@
+# Compose file for deploying the Telegram bot on a docker host.
+# Convention matches the neighbouring bots on the same server (rambirds,
+# voice2text) so operators can run `docker compose up -d` without having
+# to re-read each project.
+#
+# Required: a `.env` next to this file containing at minimum `BOT_TOKEN`.
+# See `.env.example` for the full list of variables.
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: buckshot-roulette:latest
+    container_name: buckshot_bot
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # Pass the proxy through as HTTPS_PROXY — `app/main.py` reads this
+      # and wires up an httpx-backed aiogram session when it's set.
+      # Empty default keeps the variable defined-but-empty so compose
+      # doesn't warn about an unset interpolation.
+      - HTTPS_PROXY=${BOT_PROXY:-}
+    volumes:
+      # Persist the rotating log file so restarts don't lose history.
+      - ./log:/app/log
+      # Persist the winrate / match-history SQLite file. The bot writes
+      # `stats.sqlite3` here on the first `/ai` game; surviving restarts
+      # is the whole point.
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    labels:
+      # Set to `true` to let the host's watchtower auto-pull new images.
+      # Off by default — this compose file builds locally, so there's
+      # nothing for watchtower to pull unless you flip to a registry
+      # workflow.
+      - com.centurylinklabs.watchtower.enable=false
