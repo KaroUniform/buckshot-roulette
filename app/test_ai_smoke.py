@@ -169,6 +169,54 @@ def test_glass_phone_reveal_to_human():
     print("ok  glass_phone_reveal_to_human")
 
 
+def test_pick_action_captions_include_outcome():
+    """Regression for the "куда пропал один выстрел?" report: PICK_<item>
+    captions used to say only "💉 stole your X and is using it" — the
+    item's actual effect (ejected shell from beer, pills gain/loss, etc.)
+    was silently dropped, so a player watching the AI stole-and-use a
+    beer saw no shell-ejection message and thought a round had gone
+    missing.
+    """
+    from ai.render import action_caption
+
+    # PICK_BEER must reveal the ejected shell (public info — both
+    # players see the shell fly out of the shotgun).
+    cap = action_caption(int(Action.PICK_BEER), {"beer_ejected": "live"}, actor="ai")
+    assert "💥" in cap and "flew out" in cap, cap
+    cap = action_caption(int(Action.PICK_BEER), {"beer_ejected": "blank"}, actor="human")
+    assert "🫧" in cap and "flew out" in cap, cap
+
+    # PICK_PILLS must reveal good/bad (public — visible via HP bar).
+    cap = action_caption(int(Action.PICK_PILLS), {"pills": "good"}, actor="ai")
+    assert "healed 2" in cap, cap
+    cap = action_caption(int(Action.PICK_PILLS), {"pills": "bad"}, actor="ai")
+    assert "lost 1" in cap, cap
+
+    # PICK_HANDSAW / PICK_HANDCUFF / PICK_SMOKE / PICK_INVERTER
+    # always have the same observable outcome.
+    cap = action_caption(int(Action.PICK_HANDSAW), {}, actor="ai")
+    assert "2×" in cap, cap
+    cap = action_caption(int(Action.PICK_HANDCUFF), {}, actor="ai")
+    assert "skip" in cap, cap
+    cap = action_caption(int(Action.PICK_SMOKE), {}, actor="ai")
+    assert "healed 1" in cap, cap
+    cap = action_caption(int(Action.PICK_INVERTER), {}, actor="ai")
+    assert "polarity" in cap, cap
+
+    # PICK_GLASS / PICK_PHONE reveal private info — human picker sees
+    # the result, AI picker stays opaque.
+    cap = action_caption(int(Action.PICK_GLASS), {"glass": "live"}, actor="human")
+    assert "💥" in cap, cap
+    cap = action_caption(int(Action.PICK_GLASS), {"glass": "live"}, actor="ai")
+    assert "💥" not in cap and "live" not in cap, cap
+    cap = action_caption(int(Action.PICK_PHONE), {"phone": (2, "blank")}, actor="human")
+    assert "#3" in cap and "blank" in cap, cap
+    cap = action_caption(int(Action.PICK_PHONE), {"phone": (2, "blank")}, actor="ai")
+    assert "#3" not in cap and "blank" not in cap, cap
+
+    print("ok  pick_action_captions_include_outcome")
+
+
 def test_terminal_events_use_game_over_keyboard():
     """Regression for bugbot 0c83ef58: when the human's action ends the
     game, every event in the resulting list must carry
@@ -352,6 +400,7 @@ def main() -> int:
         test_policy_loads,
         test_loadout_text_pinned_at_event_time,
         test_glass_phone_reveal_to_human,
+        test_pick_action_captions_include_outcome,
         test_terminal_events_use_game_over_keyboard,
         test_human_action_passing_turn_uses_wait_hint,
         test_adrenaline_fallback_shoot_parses,

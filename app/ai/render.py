@@ -258,10 +258,49 @@ def action_caption(action: int, info: dict, *, actor: str) -> str:
         return f"🔀 {subj} used inverter — current shell polarity flipped"
     if a in _PICK_ACTION_TO_ITEM:
         item = _PICK_ACTION_TO_ITEM[a]
-        return (
-            f"💉 {subj} stole {poss_opp} {_actions.item_emoji(item)} "
-            f"and {aux} using it"
-        )
+        # The pick caption must include the item's outcome, same as the
+        # USE_<item> captions would have. Otherwise a picked BEER silently
+        # ejects a shell with no message — leaving the player confused
+        # about where a live round went ("куда пропал один выстрел?").
+        glyph = _actions.item_emoji(item)
+        prefix = f"💉 {subj} stole {poss_opp} {glyph} and used it"
+        if item == Item.BEER:
+            ej = info.get("beer_ejected")
+            out_glyph = "💥" if ej == "live" else "🫧"
+            return f"{prefix} — {out_glyph} flew out of the shotgun"
+        if item == Item.HANDSAW:
+            return f"{prefix} — damage is now 2× for the next shot"
+        if item == Item.SMOKE:
+            return f"{prefix} — healed 1⚡️"
+        if item == Item.HANDCUFF:
+            return f"{prefix} — {obj_opp} skip the next turn"
+        if item == Item.PILLS:
+            kind = info.get("pills")
+            if kind == "good":
+                return f"{prefix} — healed 2⚡️"
+            return f"{prefix} — lost 1⚡️"
+        if item == Item.INVERTER:
+            return f"{prefix} — current shell polarity flipped"
+        # Glass and phone reveal private info to the picker only. Human
+        # picker sees the reveal; AI picker stays opaque so we don't
+        # leak its knowledge to the watching human.
+        if item == Item.GLASS:
+            if actor == "human":
+                shell = info.get("glass")
+                if shell == "live":
+                    return f"{prefix} — 💥 live"
+                if shell == "blank":
+                    return f"{prefix} — 🫧 blank"
+            return f"{prefix} — inspected the next shell"
+        if item == Item.PHONE:
+            if actor == "human":
+                phone = info.get("phone")
+                if phone is not None:
+                    pos, kind = phone
+                    gl = "💥" if kind == "live" else "🫧"
+                    return f"{prefix} — shell #{int(pos) + 1} is {gl} {kind}"
+            return f"{prefix} — got a shell hint"
+        return prefix
     return f"{subj} took action {a.name}"
 
 
