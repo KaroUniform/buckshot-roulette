@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 _AI_ROOMS: Dict[int, EngineSession] = {}
+DEFAULT_AI_WAIT_PAUSE_MS = 1100
 
 
 def _keyboard_for_event(session: EngineSession, seat: int, event: SessionEvent):
@@ -58,6 +59,8 @@ async def _send_events(bot: Bot, chat_id: int, session: EngineSession, events: l
         )
         if event.pause_after_ms > 0:
             await asyncio.sleep(event.pause_after_ms / 1000)
+        elif event.keyboard_hint == "wait":
+            await asyncio.sleep(DEFAULT_AI_WAIT_PAUSE_MS / 1000)
 
 
 @router.message(StateFilter(None, GameStates.idle, GameStates.in_ai_game), Command("ai"))

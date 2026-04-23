@@ -12,6 +12,7 @@ from gameplay import render
 
 
 RELOAD_PAUSE_MS = 2500
+AI_MOVE_BUDGET = 64
 
 
 @dataclass
@@ -202,7 +203,14 @@ class EngineSession:
             and self.state.current_player == self.ai_seat
         )
 
-    def _step_actor(self, actor_id: int, action: Action, *, actor_is_ai: bool) -> Dict[int, List[SessionEvent]]:
+    def _step_actor(
+        self,
+        actor_id: int,
+        action: Action,
+        *,
+        actor_is_ai: bool,
+        auto_drain_ai: bool = True,
+    ) -> Dict[int, List[SessionEvent]]:
         prev_reloads = self.state.n_reloads
         _, _, done, info = self.engine.step(int(action))
 
@@ -215,13 +223,13 @@ class EngineSession:
             dispatch = self._merge_dispatches(dispatch, self._game_over_dispatch())
             return dispatch
 
-        if self._current_player_is_ai():
+        if auto_drain_ai and self._current_player_is_ai():
             dispatch = self._merge_dispatches(dispatch, self._drain_ai())
         return dispatch
 
     def _drain_ai(self) -> Dict[int, List[SessionEvent]]:
         dispatch: Dict[int, List[SessionEvent]] = {}
-        for _ in range(64):
+        for _ in range(AI_MOVE_BUDGET):
             if not self._current_player_is_ai():
                 break
             obs = self.engine.observation(self.ai_seat)
@@ -231,7 +239,12 @@ class EngineSession:
             )
             dispatch = self._merge_dispatches(
                 dispatch,
-                self._step_actor(self.ai_seat, Action(action), actor_is_ai=True),
+                self._step_actor(
+                    self.ai_seat,
+                    Action(action),
+                    actor_is_ai=True,
+                    auto_drain_ai=False,
+                ),
             )
             if self.game_over:
                 return dispatch
