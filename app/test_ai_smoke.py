@@ -415,6 +415,39 @@ def test_ai_terminal_events_use_game_over_keyboard():
     )
 
 
+def test_ai_room_captures_first_mover():
+    """Regression for bugbot: `human_went_first` must reflect the actual
+    engine-randomised starting player, not `human_id == 0`. The engine
+    uses numpy PCG64 for `current_player`, AIRoom uses Mersenne Twister
+    for `human_id`; seeding both with the same int gives uncorrelated
+    picks, so the old slot-based heuristic was wrong ~half the time.
+    """
+    policy = AIPolicy.get()
+    # Scan enough seeds that both "slot heuristic agrees with truth"
+    # and "slot heuristic disagrees with truth" cases actually appear —
+    # otherwise the test would silently pass on a fortuitous subset.
+    saw_agree = False
+    saw_disagree = False
+    for seed in range(50):
+        r = AIRoom.new(human_name="Test", policy=policy, seed=seed)
+        truth = r.engine.state.current_player == r.human_id
+        assert r.human_went_first == truth, (
+            f"seed={seed}: captured={r.human_went_first}, truth={truth} "
+            f"(current_player={r.engine.state.current_player}, "
+            f"human_id={r.human_id})"
+        )
+        slot_heuristic = r.human_id == 0
+        if slot_heuristic == truth:
+            saw_agree = True
+        else:
+            saw_disagree = True
+    assert saw_agree and saw_disagree, (
+        "50 seeds didn't produce both branches — widen the range "
+        "before declaring the regression covered"
+    )
+    print("ok  ai_room_captures_first_mover")
+
+
 def test_stats_store_roundtrip():
     """Persist a few synthetic matches and assert summary + leaderboard
     line up with the raw inserts. Uses a temp-file DB so WAL / schema
@@ -516,6 +549,7 @@ def main() -> int:
         test_adrenaline_fallback_shoot_parses,
         test_ai_terminal_events_use_game_over_keyboard,
         test_wilson_ci_edges,
+        test_ai_room_captures_first_mover,
         test_stats_store_roundtrip,
         test_games_terminate,
     ]

@@ -80,6 +80,12 @@ class AIRoom:
     seed: Optional[int] = None
     started_at: Optional[datetime] = None
     n_human_turns: int = 0
+    # Captured at construction because `engine.state.current_player`
+    # moves every turn — we need the snapshot from before the first
+    # action. The two RNGs (numpy PCG64 in the engine, Mersenne Twister
+    # in AIRoom for `human_id`) are independent even on the same seed,
+    # so "human slot == 0" is NOT the same as "human moved first".
+    human_went_first: bool = False
 
     @classmethod
     def new(
@@ -102,6 +108,9 @@ class AIRoom:
             honest_obs=policy.uses_honest_obs,
         )
         engine.reset()
+        # Snapshot now — `current_player` is mutated every turn, so by
+        # the time `/stats` renders it's meaningless.
+        human_went_first = engine.state.current_player == human_id
         return cls(
             human_id=human_id,
             human_name=human_name,
@@ -111,6 +120,7 @@ class AIRoom:
             seed=seed,
             started_at=datetime.now(timezone.utc),
             n_human_turns=0,
+            human_went_first=human_went_first,
         )
 
     # ---- helpers ----

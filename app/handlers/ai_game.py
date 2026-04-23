@@ -181,7 +181,7 @@ async def _record_if_ended(message: Message, room: "AIRoom") -> None:
             user_id=(message.from_user.id if message.from_user else None),
             human_name=room.human_name,
             ai_won=(room.state.winner != room.human_id),
-            human_went_first=(room.human_id == 0),
+            human_went_first=room.human_went_first,
             n_turns=room.n_human_turns,
             n_reloads=int(room.state.n_reloads),
             seed=room.seed,
