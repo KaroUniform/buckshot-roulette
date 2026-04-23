@@ -25,6 +25,10 @@ services:
     volumes:
       # Persist the rotating log file so restarts don't lose history.
       - ./log:/app/log
+      # Persist the winrate / match-history SQLite file. The bot writes
+      # `stats.sqlite3` here on the first `/ai` game; surviving restarts
+      # is the whole point.
+      - ./data:/app/data
     logging:
       driver: json-file
       options:

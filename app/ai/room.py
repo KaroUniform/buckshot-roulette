@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from rl.engine import Action, BuckshotEngine, NUM_ACTIONS
@@ -74,6 +75,11 @@ class AIRoom:
     engine: BuckshotEngine
     policy: AIPolicy
     hidden: object  # torch.Tensor, opaque to avoid torch import here
+    # Stats-related fields. None-defaults so existing callers that
+    # don't pass them continue to work; `.new()` always populates.
+    seed: Optional[int] = None
+    started_at: Optional[datetime] = None
+    n_human_turns: int = 0
 
     @classmethod
     def new(
@@ -85,6 +91,10 @@ class AIRoom:
         # Respect the policy's trained obs layout. E19 is "hack" (47-dim).
         # Choose human slot by coin toss so neither side has a home-field
         # advantage; the policy saw both start positions during training.
+        # Always resolve seed to a concrete value so the stats store has
+        # something to record for reproducibility.
+        if seed is None:
+            seed = random.SystemRandom().randint(0, 2**31 - 1)
         rng = random.Random(seed)
         human_id = rng.randint(0, 1)
         engine = BuckshotEngine(
@@ -98,6 +108,9 @@ class AIRoom:
             engine=engine,
             policy=policy,
             hidden=policy.initial_hidden(),
+            seed=seed,
+            started_at=datetime.now(timezone.utc),
+            n_human_turns=0,
         )
 
     # ---- helpers ----
@@ -168,6 +181,11 @@ class AIRoom:
 
         prev_reloads = self.engine.state.n_reloads
         state, reward, done, info = self.engine.step(int(action))
+        # Count every legal human-applied action as a turn. Adrenaline
+        # pick-followups count separately because each is a distinct
+        # player decision — if the player wants one-count-per-game-round
+        # semantics, a stats migration can post-aggregate by reloads.
+        self.n_human_turns += 1
 
         events = self._compose_human_events(action, info, prev_reloads, done)
         if done:
