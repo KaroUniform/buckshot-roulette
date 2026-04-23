@@ -62,10 +62,15 @@ class HttpxSession(BaseSession):
         files_dict: dict[str, "InputFile"] = {}
 
         for key, value in method.model_dump(warnings=False).items():
-            value = self.prepare_value(value, bot=bot, files=files_dict)
-            if not value:
+            # Match aiogram's upstream `AiohttpSession.make_request`: skip
+            # only unset (None) fields, not any falsy value. The previous
+            # `if not value` here would have silently dropped legitimate
+            # `""`, `0`, and `False` parameters after `prepare_value`
+            # stringified them — e.g. an empty caption or a 0-valued
+            # message_thread_id would never make it to Telegram.
+            if value is None:
                 continue
-            data[key] = value
+            data[key] = self.prepare_value(value, bot=bot, files=files_dict)
 
         httpx_files: list[tuple[str, tuple[str, bytes]]] = []
         for key, input_file in files_dict.items():
