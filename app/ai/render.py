@@ -8,7 +8,7 @@ bottom/top button placement.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
@@ -206,7 +206,6 @@ def action_caption(action: int, info: dict, *, actor: str) -> str:
     obj_opp = "you" if is_ai else "🤖"
     self_refl = "itself" if is_ai else "yourself"
     poss_opp = "your" if is_ai else "🤖's"
-    aux = "are" if actor == "human" else "is"
 
     if a == Action.SHOOT_OPPONENT:
         shot = info.get("shot")
@@ -258,15 +257,89 @@ def action_caption(action: int, info: dict, *, actor: str) -> str:
         return f"🔀 {subj} used inverter — current shell polarity flipped"
     if a in _PICK_ACTION_TO_ITEM:
         item = _PICK_ACTION_TO_ITEM[a]
-        return (
-            f"💉 {subj} stole {poss_opp} {_actions.item_emoji(item)} "
-            f"and {aux} using it"
-        )
+        # The pick caption must include the item's outcome, same as the
+        # USE_<item> captions would have. Otherwise a picked BEER silently
+        # ejects a shell with no message — leaving the player confused
+        # about where a live round went ("куда пропал один выстрел?").
+        glyph = _actions.item_emoji(item)
+        prefix = f"💉 {subj} stole {poss_opp} {glyph} and used it"
+        if item == Item.BEER:
+            ej = info.get("beer_ejected")
+            out_glyph = "💥" if ej == "live" else "🫧"
+            return f"{prefix} — {out_glyph} flew out of the shotgun"
+        if item == Item.HANDSAW:
+            return f"{prefix} — damage is now 2× for the next shot"
+        if item == Item.SMOKE:
+            return f"{prefix} — healed 1⚡️"
+        if item == Item.HANDCUFF:
+            return f"{prefix} — {obj_opp} skip the next turn"
+        if item == Item.PILLS:
+            kind = info.get("pills")
+            if kind == "good":
+                return f"{prefix} — healed 2⚡️"
+            return f"{prefix} — lost 1⚡️"
+        if item == Item.INVERTER:
+            return f"{prefix} — current shell polarity flipped"
+        # Glass and phone reveal private info to the picker only. Human
+        # picker sees the reveal; AI picker stays opaque so we don't
+        # leak its knowledge to the watching human.
+        if item == Item.GLASS:
+            if actor == "human":
+                shell = info.get("glass")
+                if shell == "live":
+                    return f"{prefix} — 💥 live"
+                if shell == "blank":
+                    return f"{prefix} — 🫧 blank"
+            return f"{prefix} — inspected the next shell"
+        if item == Item.PHONE:
+            if actor == "human":
+                phone = info.get("phone")
+                if phone is not None:
+                    pos, kind = phone
+                    gl = "💥" if kind == "live" else "🫧"
+                    return f"{prefix} — shell #{int(pos) + 1} is {gl} {kind}"
+            return f"{prefix} — got a shell hint"
+        return prefix
     return f"{subj} took action {a.name}"
 
 
-def reload_banner() -> str:
-    return "🔄 Shotgun reloaded — new round"
+def _inventory_block(state: GameState, player_id: int) -> str:
+    items = inventory_emoji(state, player_id)
+    return " ".join(items) if items else "—"
+
+
+_SEPARATOR = "━━━━━━━━━━━━━━━"
+
+
+def reload_banner(
+    state: Optional[GameState] = None,
+    human_name: Optional[str] = None,
+    human_id: Optional[int] = None,
+) -> str:
+    """Round-change announcement.
+
+    With no args — the legacy compact form, still used as a fallback.
+    With (state, human_name, human_id) — a richer multi-line message
+    that includes the new loadout and both players' current inventory
+    (items are distributed inside `_load_round` so the round-start
+    inventory already reflects whatever was handed out). Pinned at
+    event-construction time in `room.py` so `await` boundaries can't
+    race the next reload into the rendered string.
+    """
+    if state is None or human_name is None or human_id is None:
+        return "🔄 Shotgun reloaded — new round"
+    ai_id = 1 - human_id
+    live = int(state.round_initial_live)
+    blank = int(state.round_initial_blank)
+    return (
+        f"{_SEPARATOR}\n"
+        f"🔄  NEW ROUND\n"
+        f"Shells: 💥×{live}  🫧×{blank}\n"
+        f"\n"
+        f"{human_name}: {_inventory_block(state, human_id)}\n"
+        f"🤖 AI: {_inventory_block(state, ai_id)}\n"
+        f"{_SEPARATOR}"
+    )
 
 
 def game_over_message(state: GameState, human_name: str, human_id: int) -> str:
