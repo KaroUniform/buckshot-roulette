@@ -206,7 +206,6 @@ def action_caption(action: int, info: dict, *, actor: str) -> str:
     obj_opp = "you" if is_ai else "🤖"
     self_refl = "itself" if is_ai else "yourself"
     poss_opp = "your" if is_ai else "🤖's"
-    aux = "are" if actor == "human" else "is"
 
     if a == Action.SHOOT_OPPONENT:
         shot = info.get("shot")
