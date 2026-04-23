@@ -21,6 +21,7 @@ from core.room_manager import RoomsManager
 from handlers import rooms_manager as rooms_handler
 from handlers import ai_game
 from gameplay.actions import SHOOT_OPP_GLYPH, SHOOT_SELF_GLYPH, item_emoji
+from gameplay import render as gameplay_render
 from gameplay.session import AI_MOVE_BUDGET, EngineSession, Participant, SessionEvent
 from rl.engine import Action, Item
 
@@ -111,17 +112,22 @@ class _LoopEngine:
 class _FakeBot:
     def __init__(self):
         self.messages = []
+        self.operations = []
 
     async def send_message(self, chat_id, text, reply_markup=None):
         self.messages.append((chat_id, text, reply_markup))
+        self.operations.append(("message", text))
 
 
 class _FakeAISession:
+    def __init__(self, *, ai_won: bool = False):
+        self._ai_won = ai_won
+
     def seat_for_chat(self, chat_id):
         return 0
 
     def ai_won(self):
-        return False
+        return self._ai_won
 
 
 class _FakeState:
@@ -207,6 +213,48 @@ def test_ai_wait_events_keep_default_pause():
     print("ok  ai_wait_events_keep_default_pause")
 
 
+def test_ai_loss_message_precedes_sticker():
+    bot = _FakeBot()
+    session = _FakeAISession(ai_won=True)
+
+    async def _fake_sticker(_bot, _chat_id):
+        bot.operations.append(("sticker", None))
+
+    async def _run():
+        with patch("handlers.ai_game.send_winner_sticker", new=_fake_sticker):
+            await ai_game._send_events(
+                bot,
+                505,
+                session,
+                [SessionEvent(text="⚰️ The AI won. Try /ai to play again.", keyboard_hint="game_over", event_type="game_over")],
+            )
+
+    asyncio.run(_run())
+    assert bot.messages[0][1] == "⚰️ The AI won. Try /ai to play again."
+    assert bot.operations == [
+        ("message", "⚰️ The AI won. Try /ai to play again."),
+        ("sticker", None),
+    ], bot.operations
+    print("ok  ai_loss_message_precedes_sticker")
+
+
+def test_game_summary_splits_hp_items_and_status():
+    session = EngineSession.new_vs_ai(
+        human_name="Karo",
+        human_chat_id=707,
+        policy=_FakePolicy(),
+        seed=11,
+    )
+    state = session.state
+    state.players[0].skip_next_turn = True
+    summary = gameplay_render.game_summary(state, session.names, viewer_id=0)
+    assert "HP:\n" in summary, summary
+    assert "\n\nItems:\n" in summary, summary
+    assert "\n\nStatus:\n" in summary, summary
+    assert "🔗 You are cuffed and will skip the next turn" in summary, summary
+    print("ok  game_summary_splits_hp_items_and_status")
+
+
 def test_waiting_player_text_keeps_room_membership():
     previous_manager = rooms_handler.MANAGER
     manager = RoomsManager()
@@ -236,5 +284,7 @@ if __name__ == "__main__":
     test_ai_session_forces_human_first()
     test_ai_move_budget_stays_iterative()
     test_ai_wait_events_keep_default_pause()
+    test_ai_loss_message_precedes_sticker()
+    test_game_summary_splits_hp_items_and_status()
     test_waiting_player_text_keeps_room_membership()
     print("ok  gameplay_session_smoke")

@@ -63,21 +63,33 @@ def _items_line(state: GameState, player_id: int) -> str:
 
 def game_summary(state: GameState, names: Sequence[str], viewer_id: int) -> str:
     ordered = [viewer_id, 1 - viewer_id]
-    lines: List[str] = []
+    hp_lines: List[str] = []
+    item_lines: List[str] = []
+    status_lines: List[str] = []
     for player_id in ordered:
         marker = "▶️ " if state.current_player == player_id and not state.done else ""
-        lines.append(
+        hp_lines.append(
             f"{marker}{_label(names, viewer_id, player_id)}: {_hp_bar(state.players[player_id].hp)}"
         )
-        lines.append(_items_line(state, player_id))
+        item_lines.append(f"{_label(names, viewer_id, player_id)}: {', '.join(inventory_emoji(state, player_id)) or '—'}")
     if state.damage_mult > 1:
-        lines.append("🪚 The next live shot deals 2× damage")
+        status_lines.append("🪚 The next live shot deals 2× damage")
     if state.adrenaline_active and state.current_player == viewer_id:
-        lines.append("💉 Adrenaline is active: steal one item now")
+        status_lines.append("💉 Adrenaline is active: steal one item now")
     if state.players[viewer_id].skip_next_turn:
-        lines.append("🔗 You are cuffed and will skip the next turn")
+        status_lines.append("🔗 You are cuffed and will skip the next turn")
     elif state.players[1 - viewer_id].skip_next_turn:
-        lines.append(f"🔗 {_label(names, viewer_id, 1 - viewer_id)} is cuffed")
+        status_lines.append(f"🔗 {_label(names, viewer_id, 1 - viewer_id)} is cuffed")
+
+    lines = ["HP:"]
+    lines.extend(hp_lines)
+    lines.append("")
+    lines.append("Items:")
+    lines.extend(item_lines)
+    if status_lines:
+        lines.append("")
+        lines.append("Status:")
+        lines.extend(status_lines)
     return "\n".join(lines)
 
 
@@ -293,4 +305,3 @@ def game_over_message(
     if state.winner == viewer_id:
         return "💼 Congratulations, you've won!"
     return f"⚰️ {_label(names, viewer_id, state.winner)} won the round."
-

@@ -45,6 +45,11 @@ async def _send_events(bot: Bot, chat_id: int, session: EngineSession, events: l
 
     sticker_sent = False
     for event in events:
+        await bot.send_message(
+            chat_id,
+            event.text,
+            reply_markup=_keyboard_for_event(session, seat, event),
+        )
         if (
             not sticker_sent
             and event.event_type == "game_over"
@@ -55,12 +60,6 @@ async def _send_events(bot: Bot, chat_id: int, session: EngineSession, events: l
             # the AI. PvP winners should not receive it.
             await send_winner_sticker(bot, chat_id)
             sticker_sent = True
-
-        await bot.send_message(
-            chat_id,
-            event.text,
-            reply_markup=_keyboard_for_event(session, seat, event),
-        )
         if event.pause_after_ms > 0:
             await asyncio.sleep(event.pause_after_ms / 1000)
         elif event.keyboard_hint == "wait":
