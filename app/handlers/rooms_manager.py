@@ -18,6 +18,17 @@ router = Router()
 MANAGER = RoomsManager()
 
 
+async def _place_player_in_waiting_room(message: Message, state: FSMContext, room_id: int):
+    MANAGER.create_room(room_id)
+    MANAGER.reg_player_in_room(message.from_user.first_name, message.chat.id, room_id)
+    await state.set_state(GameStates.in_game)
+    await state.set_data({"room_id": room_id})
+    await message.answer(
+        f"You are in room `{room_id}` now. Waiting for the second player. Send them the code!",
+        parse_mode="Markdown",
+    )
+
+
 def _keyboard_for_event(
     session: EngineSession,
     seat: int,
@@ -143,37 +154,16 @@ async def join(message: Message, bot: Bot, state: FSMContext):
 
     if room_id is None:
         room_id = random.randint(100000, 999999)
-        MANAGER.create_room(room_id)
-        MANAGER.reg_player_in_room(message.from_user.first_name, message.chat.id, room_id)
-        await state.set_state(GameStates.in_game)
-        await state.set_data({"room_id": room_id})
-        await message.answer(
-            f"You are in room `{room_id}` now. Waiting for the second player. Send them the code!",
-            parse_mode="Markdown",
-        )
+        await _place_player_in_waiting_room(message, state, room_id)
         return
 
     if not MANAGER.check_room(room_id):
-        MANAGER.create_room(room_id)
-        MANAGER.reg_player_in_room(message.from_user.first_name, message.chat.id, room_id)
-        await state.set_state(GameStates.in_game)
-        await state.set_data({"room_id": room_id})
-        await message.answer(
-            f"You are in room `{room_id}` now. Waiting for the second player. Send them the code!",
-            parse_mode="Markdown",
-        )
+        await _place_player_in_waiting_room(message, state, room_id)
         return
 
     if not MANAGER.room_can_accept_player(room_id):
         room_id = random.randint(100000, 999999)
-        MANAGER.create_room(room_id)
-        MANAGER.reg_player_in_room(message.from_user.first_name, message.chat.id, room_id)
-        await state.set_state(GameStates.in_game)
-        await state.set_data({"room_id": room_id})
-        await message.answer(
-            f"You are in room `{room_id}` now. Waiting for the second player. Send them the code!",
-            parse_mode="Markdown",
-        )
+        await _place_player_in_waiting_room(message, state, room_id)
         return
 
     MANAGER.reg_player_in_room(message.from_user.first_name, message.chat.id, room_id)

@@ -50,6 +50,9 @@ async def _send_events(bot: Bot, chat_id: int, session: EngineSession, events: l
             and event.event_type == "game_over"
             and session.ai_won()
         ):
+            # Product requirement: this sticker is only used in `/ai`,
+            # and it is sent to the human chat when the human loses to
+            # the AI. PvP winners should not receive it.
             await send_winner_sticker(bot, chat_id)
             sticker_sent = True
 
