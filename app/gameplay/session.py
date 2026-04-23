@@ -147,18 +147,18 @@ class EngineSession:
     def start(self) -> Dict[int, List[SessionEvent]]:
         dispatch = self._broadcast(
             lambda viewer_id: SessionEvent(
-                text=render.opening_text(self.state, self.names, viewer_id, ai_mode=self.ai_mode),
+                text=render.reload_banner(self.state, self.names, viewer_id),
                 keyboard_hint=self._hint_for_viewer(viewer_id, done=self.game_over),
-                event_type="opening",
+                event_type="banner",
             )
         )
         dispatch = self._merge_dispatches(
             dispatch,
             self._broadcast(
                 lambda viewer_id: SessionEvent(
-                    text=render.reload_banner(self.state, self.names, viewer_id),
+                    text=render.opening_text(self.state, self.names, viewer_id, ai_mode=self.ai_mode),
                     keyboard_hint=self._hint_for_viewer(viewer_id, done=self.game_over),
-                    event_type="banner",
+                    event_type="opening",
                 )
             ),
         )

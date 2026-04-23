@@ -160,6 +160,8 @@ def test_ai_session_forces_human_first():
     assert session.state.current_player == 0, "AI mode must hand the first move to the human"
     opening = session.start()
     hints = [event.keyboard_hint for event in opening[303]]
+    event_types = [event.event_type for event in opening[303][:2]]
+    assert event_types == ["banner", "opening"], event_types
     assert "human_turn" in hints, hints
     print("ok  ai_session_forces_human_first")
 
